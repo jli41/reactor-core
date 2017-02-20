@@ -1,9 +1,25 @@
+/*
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package reactor.core.publisher;
 
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
+import reactor.util.context.Context;
 
 /**
  * Repeatedly subscribes to the source sequence if it signals any error
@@ -14,11 +30,11 @@ import org.reactivestreams.Subscriber;
  * @param <T> the value type
  * @see <a href="https://github.com/reactor/reactive-streams-commons">Reactive-Streams-Commons</a>
  */
-final class FluxRetry<T> extends FluxSource<T, T> {
+final class FluxRetry<T> extends FluxOperator<T, T> {
 
 	final long times;
 
-	public FluxRetry(Publisher<? extends T> source, long times) {
+	FluxRetry(Flux<? extends T> source, long times) {
 		super(source);
 		if (times < 0L) {
 			throw new IllegalArgumentException("times >= 0 required");
@@ -27,8 +43,8 @@ final class FluxRetry<T> extends FluxSource<T, T> {
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super T> s) {
-		RetrySubscriber<T> parent = new RetrySubscriber<>(source, s, times);
+	public void subscribe(Subscriber<? super T> s, Context ctx) {
+		RetrySubscriber<T> parent = new RetrySubscriber<>(source, s, times, ctx);
 
 		s.onSubscribe(parent);
 
@@ -51,8 +67,8 @@ final class FluxRetry<T> extends FluxSource<T, T> {
 
 		long produced;
 
-		public RetrySubscriber(Publisher<? extends T> source, Subscriber<? super T> actual, long remaining) {
-			super(actual);
+		RetrySubscriber(Publisher<? extends T> source, Subscriber<? super T> actual, long remaining, Context ctx) {
+			super(actual, ctx);
 			this.source = source;
 			this.remaining = remaining;
 		}
@@ -61,7 +77,7 @@ final class FluxRetry<T> extends FluxSource<T, T> {
 		public void onNext(T t) {
 			produced++;
 
-			subscriber.onNext(t);
+			actual.onNext(t);
 		}
 
 		@Override
@@ -69,7 +85,7 @@ final class FluxRetry<T> extends FluxSource<T, T> {
 			long r = remaining;
 			if (r != Long.MAX_VALUE) {
 				if (r == 0) {
-					subscriber.onError(t);
+					actual.onError(t);
 					return;
 				}
 				remaining = r - 1;

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,7 +22,7 @@ import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
-import reactor.core.MultiReceiver;
+import reactor.util.context.Context;
 
 /**
  * Concatenates a fixed array of Publishers' values.
@@ -31,21 +31,16 @@ import reactor.core.MultiReceiver;
  *
  * @see <a href="https://github.com/reactor/reactive-streams-commons">Reactive-Streams-Commons</a>
  */
-final class FluxConcatIterable<T> extends Flux<T> implements MultiReceiver {
+final class FluxConcatIterable<T> extends Flux<T> {
 
 	final Iterable<? extends Publisher<? extends T>> iterable;
 
-	public FluxConcatIterable(Iterable<? extends Publisher<? extends T>> iterable) {
+	FluxConcatIterable(Iterable<? extends Publisher<? extends T>> iterable) {
 		this.iterable = Objects.requireNonNull(iterable, "iterable");
 	}
 
 	@Override
-	public Iterator<?> upstreams() {
-		return iterable.iterator();
-	}
-
-	@Override
-	public void subscribe(Subscriber<? super T> s) {
+	public void subscribe(Subscriber<? super T> s, Context ctx) {
 
 		Iterator<? extends Publisher<? extends T>> it;
 
@@ -58,7 +53,7 @@ final class FluxConcatIterable<T> extends Flux<T> implements MultiReceiver {
 			return;
 		}
 
-		ConcatIterableSubscriber<T> parent = new ConcatIterableSubscriber<>(s, it);
+		ConcatIterableSubscriber<T> parent = new ConcatIterableSubscriber<>(s, it, ctx);
 
 		s.onSubscribe(parent);
 
@@ -80,9 +75,9 @@ final class FluxConcatIterable<T> extends Flux<T> implements MultiReceiver {
 
 		long produced;
 
-		public ConcatIterableSubscriber(Subscriber<? super T> actual,
-				Iterator<? extends Publisher<? extends T>> it) {
-			super(actual);
+		ConcatIterableSubscriber(Subscriber<? super T> actual,
+				Iterator<? extends Publisher<? extends T>> it, Context ctx) {
+			super(actual, ctx);
 			this.it = it;
 		}
 
@@ -90,7 +85,7 @@ final class FluxConcatIterable<T> extends Flux<T> implements MultiReceiver {
 		public void onNext(T t) {
 			produced++;
 
-			subscriber.onNext(t);
+			actual.onNext(t);
 		}
 
 		@Override
@@ -117,7 +112,7 @@ final class FluxConcatIterable<T> extends Flux<T> implements MultiReceiver {
 					}
 
 					if (!b) {
-						subscriber.onComplete();
+						actual.onComplete();
 						return;
 					}
 
@@ -128,7 +123,7 @@ final class FluxConcatIterable<T> extends Flux<T> implements MultiReceiver {
 								"The Publisher returned by the iterator is null");
 					}
 					catch (Throwable e) {
-						subscriber.onError(Operators.onOperatorError(this, e));
+						actual.onError(Operators.onOperatorError(this, e));
 						return;
 					}
 

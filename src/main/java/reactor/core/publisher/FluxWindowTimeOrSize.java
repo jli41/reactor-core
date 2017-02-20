@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,44 +16,46 @@
 
 package reactor.core.publisher;
 
-import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
-import reactor.core.Loopback;
-import reactor.core.Producer;
 import reactor.core.scheduler.Scheduler;
+import reactor.util.context.Context;
+import reactor.util.context.ContextRelay;
 
 /**
- * WindowAction is forwarding events on a steam until {@code backlog} is reached, after that streams collected events
+ * WindowTimeoutSubscriber is forwarding events on a steam until {@code backlog} is reached, after that streams collected events
  * further, complete it and create a fresh new fluxion.
  * @author Stephane Maldini
  */
 final class FluxWindowTimeOrSize<T> extends FluxBatch<T, Flux<T>> {
 
-	public FluxWindowTimeOrSize(Publisher<T> source, int backlog, long timespan, Scheduler timer) {
+	FluxWindowTimeOrSize(Flux<T> source, int backlog, long timespan, Scheduler timer) {
 		super(source, backlog, timespan, timer);
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super Flux<T>> subscriber) {
-		source.subscribe(new WindowAction<>(prepareSub(subscriber), batchSize, timespan, timer));
+	public void subscribe(Subscriber<? super Flux<T>> subscriber, Context ctx) {
+		source.subscribe(new WindowTimeoutSubscriber<>(prepareSub(subscriber),
+						batchSize, timespan, timer, ctx),
+				ctx);
 	}
 
-	final static class Window<T> extends Flux<T> implements Subscriber<T>, Subscription, Producer {
+	final static class Window<T> extends Flux<T> implements InnerOperator<T, T> {
 
-		final protected UnicastProcessor<T> processor;
-		final protected Scheduler      timer;
+		final UnicastProcessor<T> processor;
+		final Scheduler      timer;
 
-		protected int count = 0;
+		final Context context;
+		int count = 0;
 
-		public Window(Scheduler timer) {
+		Window(Scheduler timer, Context ctx) {
 			this.processor = UnicastProcessor.create();
 			this.timer = timer;
+			this.context = ctx;
 		}
 
 		@Override
 		public void onSubscribe(Subscription s) {
-			s.cancel();
 		}
 
 		@Override
@@ -73,8 +75,9 @@ final class FluxWindowTimeOrSize<T> extends FluxBatch<T, Flux<T>> {
 		}
 
 		@Override
-		public void subscribe(Subscriber<? super T> s) {
-			processor.subscribe(s);
+		public void subscribe(Subscriber<? super T> s, Context ctx) {
+			ContextRelay.set(s, context);
+			processor.subscribe(s, ctx);
 		}
 
 		@Override
@@ -88,40 +91,42 @@ final class FluxWindowTimeOrSize<T> extends FluxBatch<T, Flux<T>> {
 		}
 
 		@Override
-		public Object downstream() {
+		public Subscriber<? super T> actual() {
 			return processor;
 		}
 	}
 
-	final static class WindowAction<T> extends BatchAction<T, Flux<T>> implements Loopback {
+	final static class WindowTimeoutSubscriber<T> extends BatchSubscriber<T, Flux<T>> {
 
-		private final Scheduler timer;
+		final Scheduler timer;
 
-		private Window<T> currentWindow;
+		Context ctx;
 
-		public WindowAction(Subscriber<? super Flux<T>> actual,
+		Window<T> currentWindow;
+
+		WindowTimeoutSubscriber(Subscriber<? super Flux<T>> actual,
 				int backlog,
 				long timespan,
-				Scheduler timer) {
-
+				Scheduler timer,
+				Context ctx) {
 			super(actual, backlog, true, timespan, timer.createWorker());
 			this.timer = timer;
+			this.ctx = ctx;
 		}
 
-		protected Flux<T> createWindowStream() {
-			Window<T> _currentWindow = new Window<>(timer);
-			_currentWindow.onSubscribe(new Subscription(){
+		@Override
+		public void onContext(Context context) {
+			ctx = context;
+			super.onContext(context);
+		}
 
-				@Override
-				public void cancel() {
-					currentWindow = null;
-				}
+		@Override
+		void doOnSubscribe() {
 
-				@Override
-				public void request(long n) {
+		}
 
-				}
-			});
+		Flux<T> createWindowStream() {
+			Window<T> _currentWindow = new Window<>(timer, ctx);
 			currentWindow = _currentWindow;
 			return _currentWindow;
 		}
@@ -149,7 +154,7 @@ final class FluxWindowTimeOrSize<T> extends FluxBatch<T, Flux<T>> {
 
 		@Override
 		protected void firstCallback(T event) {
-			subscriber.onNext(createWindowStream());
+			actual.onNext(createWindowStream());
 		}
 
 		@Override
@@ -167,10 +172,6 @@ final class FluxWindowTimeOrSize<T> extends FluxBatch<T, Flux<T>> {
 			}
 		}
 
-		@Override
-		public Object connectedInput() {
-			return currentWindow;
-		}
 	}
 
 

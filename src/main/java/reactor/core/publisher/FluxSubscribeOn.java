@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,18 +16,15 @@
 package reactor.core.publisher;
 
 import java.util.Objects;
-import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicLongFieldUpdater;
 import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
 
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
-import reactor.core.Loopback;
-import reactor.core.Producer;
 import reactor.core.scheduler.Scheduler;
 import reactor.core.scheduler.Scheduler.Worker;
-
+import reactor.util.context.Context;
 
 /**
  * Subscribes to the source Publisher asynchronously through a scheduler function or
@@ -36,12 +33,12 @@ import reactor.core.scheduler.Scheduler.Worker;
  * @param <T> the value type
  * @see <a href="https://github.com/reactor/reactive-streams-commons">Reactive-Streams-Commons</a>
  */
-final class FluxSubscribeOn<T> extends FluxSource<T, T> implements Loopback {
+final class FluxSubscribeOn<T> extends FluxOperator<T, T> {
 
 	final Scheduler scheduler;
 	
 	FluxSubscribeOn(
-			Publisher<? extends T> source, 
+			Flux<? extends T> source,
 			Scheduler scheduler) {
 		super(source);
 		this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
@@ -49,7 +46,7 @@ final class FluxSubscribeOn<T> extends FluxSource<T, T> implements Loopback {
 
 	@Override
 	@SuppressWarnings("unchecked")
-	public void subscribe(Subscriber<? super T> s) {
+	public void subscribe(Subscriber<? super T> s, Context ctx) {
 		Worker worker;
 		
 		try {
@@ -68,13 +65,8 @@ final class FluxSubscribeOn<T> extends FluxSource<T, T> implements Loopback {
 		}
 	}
 
-	@Override
-	public Object connectedInput() {
-		return scheduler;
-	}
-
 	static final class SubscribeOnSubscriber<T>
-			implements Subscription, Subscriber<T>, Producer, Loopback, Runnable {
+			implements InnerOperator<T, T>, Runnable {
 
 		final Subscriber<? super T> actual;
 
@@ -196,18 +188,21 @@ final class FluxSubscribeOn<T> extends FluxSource<T, T> implements Loopback {
 		}
 
 		@Override
-		public Object downstream() {
+		public Object scan(Attr key) {
+			switch (key){
+				case PARENT:
+					return s;
+				case CANCELLED:
+					return s == Operators.cancelledSubscription();
+				case REQUESTED_FROM_DOWNSTREAM:
+					return requested;
+			}
+			return InnerOperator.super.scan(key);
+		}
+
+		@Override
+		public Subscriber<? super T> actual() {
 			return actual;
-		}
-
-		@Override
-		public Object connectedOutput() {
-			return worker;
-		}
-
-		@Override
-		public Object connectedInput() {
-			return null;
 		}
 
 	}

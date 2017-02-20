@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,10 +21,10 @@ import java.util.Objects;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
-import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import reactor.core.Fuseable;
 import reactor.core.publisher.FluxDistinct.DistinctFuseableSubscriber;
+import reactor.util.context.Context;
 
 /**
  * For each subscriber, tracks the source values that have been seen and
@@ -37,13 +37,13 @@ import reactor.core.publisher.FluxDistinct.DistinctFuseableSubscriber;
  * @see <a href="https://github.com/reactor/reactive-streams-commons">Reactive-Streams-Commons</a>
  */
 final class FluxDistinctFuseable<T, K, C extends Collection<? super K>>
-		extends FluxSource<T, T> implements Fuseable {
+		extends FluxOperator<T, T> implements Fuseable {
 
 	final Function<? super T, ? extends K> keyExtractor;
 
 	final Supplier<C> collectionSupplier;
 
-	FluxDistinctFuseable(Publisher<? extends T> source,
+	FluxDistinctFuseable(Flux<? extends T> source,
 			Function<? super T, ? extends K> keyExtractor,
 			Supplier<C> collectionSupplier) {
 		super(source);
@@ -53,7 +53,7 @@ final class FluxDistinctFuseable<T, K, C extends Collection<? super K>>
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super T> s) {
+	public void subscribe(Subscriber<? super T> s, Context ctx) {
 		C collection;
 
 		try {
@@ -65,6 +65,7 @@ final class FluxDistinctFuseable<T, K, C extends Collection<? super K>>
 			return;
 		}
 
-		source.subscribe(new DistinctFuseableSubscriber<>(s, collection, keyExtractor));
+		source.subscribe(new DistinctFuseableSubscriber<>(s, collection, keyExtractor),
+				ctx);
 	}
 }

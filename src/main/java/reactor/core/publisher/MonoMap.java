@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,10 +18,9 @@ package reactor.core.publisher;
 import java.util.Objects;
 import java.util.function.Function;
 
-import org.reactivestreams.*;
-
+import org.reactivestreams.Subscriber;
 import reactor.core.Fuseable;
-import reactor.core.publisher.FluxMapFuseable.MapFuseableSubscriber;
+import reactor.util.context.Context;
 
 /**
  * Maps the values of the source publisher one-on-one via a mapper function.
@@ -30,7 +29,7 @@ import reactor.core.publisher.FluxMapFuseable.MapFuseableSubscriber;
  * @param <R> the result value type
  * @see <a href="https://github.com/reactor/reactive-streams-commons">Reactive-Streams-Commons</a>
  */
-final class MonoMap<T, R> extends MonoSource<T, R> {
+final class MonoMap<T, R> extends MonoOperator<T, R> {
 
 	final Function<? super T, ? extends R> mapper;
 
@@ -41,19 +40,19 @@ final class MonoMap<T, R> extends MonoSource<T, R> {
 	 * @param mapper the mapper function
 	 * @throws NullPointerException if either {@code source} or {@code mapper} is null.
 	 */
-	MonoMap(Publisher<? extends T> source, Function<? super T, ? extends R> mapper) {
+	MonoMap(Mono<? extends T> source, Function<? super T, ? extends R> mapper) {
 		super(source);
 		this.mapper = Objects.requireNonNull(mapper, "mapper");
 	}
 
 	@Override
 	@SuppressWarnings("unchecked")
-	public void subscribe(Subscriber<? super R> s) {
+	public void subscribe(Subscriber<? super R> s, Context ctx) {
 		if (s instanceof Fuseable.ConditionalSubscriber) {
 			Fuseable.ConditionalSubscriber<? super R> cs = (Fuseable.ConditionalSubscriber<? super R>) s;
-			source.subscribe(new FluxMap.MapConditionalSubscriber<>(cs, mapper));
+			source.subscribe(new FluxMap.MapConditionalSubscriber<>(cs, mapper), ctx);
 			return;
 		}
-		source.subscribe(new FluxMap.MapSubscriber<>(s, mapper));
+		source.subscribe(new FluxMap.MapSubscriber<>(s, mapper), ctx);
 	}
 }

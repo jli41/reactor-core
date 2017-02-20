@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,14 +19,10 @@ package reactor.core.publisher;
 import java.util.Objects;
 import java.util.function.Predicate;
 
-import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
 import reactor.core.Fuseable;
-import reactor.core.Loopback;
-import reactor.core.Producer;
-import reactor.core.Receiver;
-import reactor.core.Trackable;
+import reactor.util.context.Context;
 
 /**
  * Filters out values that make a filter function return false.
@@ -35,29 +31,29 @@ import reactor.core.Trackable;
  *
  * @see <a href="https://github.com/reactor/reactive-streams-commons">Reactive-Streams-Commons</a>
  */
-final class FluxFilterFuseable<T> extends FluxSource<T, T> implements Fuseable {
+final class FluxFilterFuseable<T> extends FluxOperator<T, T> implements Fuseable {
 
 	final Predicate<? super T> predicate;
 
-	FluxFilterFuseable(Publisher<? extends T> source, Predicate<? super T> predicate) {
+	FluxFilterFuseable(Flux<? extends T> source, Predicate<? super T> predicate) {
 		super(source);
 		this.predicate = Objects.requireNonNull(predicate, "predicate");
 	}
 
 	@Override
 	@SuppressWarnings("unchecked")
-	public void subscribe(Subscriber<? super T> s) {
+	public void subscribe(Subscriber<? super T> s, Context ctx) {
 		if (s instanceof ConditionalSubscriber) {
 			source.subscribe(new FilterFuseableConditionalSubscriber<>((ConditionalSubscriber<? super T>) s,
-					predicate));
+					predicate), ctx);
 			return;
 		}
-		source.subscribe(new FilterFuseableSubscriber<>(s, predicate));
+		source.subscribe(new FilterFuseableSubscriber<>(s, predicate), ctx);
 	}
 
 	static final class FilterFuseableSubscriber<T>
-			implements Receiver, Producer, Loopback, SynchronousSubscription<T>,
-			           ConditionalSubscriber<T>, Trackable {
+			implements InnerOperator<T, T>, QueueSubscription<T>,
+			           ConditionalSubscriber<T> {
 
 		final Subscriber<? super T> actual;
 
@@ -69,7 +65,7 @@ final class FluxFilterFuseable<T> extends FluxSource<T, T> implements Fuseable {
 
 		int sourceMode;
 
-		public FilterFuseableSubscriber(Subscriber<? super T> actual,
+		FilterFuseableSubscriber(Subscriber<? super T> actual,
 				Predicate<? super T> predicate) {
 			this.actual = actual;
 			this.predicate = predicate;
@@ -156,28 +152,19 @@ final class FluxFilterFuseable<T> extends FluxSource<T, T> implements Fuseable {
 		}
 
 		@Override
-		public boolean isStarted() {
-			return s != null && !done;
+		public Object scan(Attr key) {
+			switch (key) {
+				case PARENT:
+					return s;
+				case TERMINATED:
+					return done;
+			}
+			return InnerOperator.super.scan(key);
 		}
 
 		@Override
-		public boolean isTerminated() {
-			return done;
-		}
-
-		@Override
-		public Object downstream() {
+		public Subscriber<? super T> actual() {
 			return actual;
-		}
-
-		@Override
-		public Object connectedInput() {
-			return predicate;
-		}
-
-		@Override
-		public Object upstream() {
-			return s;
 		}
 
 		@Override
@@ -247,8 +234,8 @@ final class FluxFilterFuseable<T> extends FluxSource<T, T> implements Fuseable {
 	}
 
 	static final class FilterFuseableConditionalSubscriber<T>
-			implements Receiver, Producer, Loopback, ConditionalSubscriber<T>,
-			           SynchronousSubscription<T>, Trackable {
+			implements InnerOperator<T, T>, ConditionalSubscriber<T>,
+			           QueueSubscription<T> {
 
 		final ConditionalSubscriber<? super T> actual;
 
@@ -260,7 +247,7 @@ final class FluxFilterFuseable<T> extends FluxSource<T, T> implements Fuseable {
 
 		int sourceMode;
 
-		public FilterFuseableConditionalSubscriber(ConditionalSubscriber<? super T> actual,
+		FilterFuseableConditionalSubscriber(ConditionalSubscriber<? super T> actual,
 				Predicate<? super T> predicate) {
 			this.actual = actual;
 			this.predicate = predicate;
@@ -343,28 +330,19 @@ final class FluxFilterFuseable<T> extends FluxSource<T, T> implements Fuseable {
 		}
 
 		@Override
-		public boolean isStarted() {
-			return s != null && !done;
+		public Object scan(Attr key) {
+			switch (key) {
+				case PARENT:
+					return s;
+				case TERMINATED:
+					return done;
+			}
+			return InnerOperator.super.scan(key);
 		}
 
 		@Override
-		public boolean isTerminated() {
-			return done;
-		}
-
-		@Override
-		public Object downstream() {
+		public Subscriber<? super T> actual() {
 			return actual;
-		}
-
-		@Override
-		public Object connectedInput() {
-			return predicate;
-		}
-
-		@Override
-		public Object upstream() {
-			return s;
 		}
 
 		@Override

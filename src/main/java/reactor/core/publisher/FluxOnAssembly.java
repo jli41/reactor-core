@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,14 +18,12 @@ package reactor.core.publisher;
 import java.util.LinkedList;
 import java.util.List;
 
-import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
 import reactor.core.Exceptions;
 import reactor.core.Fuseable;
-import reactor.core.Receiver;
-import reactor.util.Logger;
-import reactor.util.Loggers;
+import reactor.core.Scannable;
+import reactor.util.context.Context;
 import reactor.util.function.Tuple3;
 import reactor.util.function.Tuples;
 
@@ -47,7 +45,7 @@ import reactor.util.function.Tuples;
  * @param <T> the value type passing through
  * @see <a href="https://github.com/reactor/reactive-streams-commons">https://github.com/reactor/reactive-streams-commons</a>
  */
-final class FluxOnAssembly<T> extends FluxSource<T, T> implements Fuseable, AssemblyOp {
+final class FluxOnAssembly<T> extends FluxOperator<T, T> implements Fuseable, AssemblyOp {
 
 	final AssemblySnapshotException snapshotStack;
 
@@ -62,7 +60,7 @@ final class FluxOnAssembly<T> extends FluxSource<T, T> implements Fuseable, Asse
 	/**
 	 * Create an assembly trace decorated as a {@link Flux}.
 	 */
-	FluxOnAssembly(Publisher<? extends T> source) {
+	FluxOnAssembly(Flux<? extends T> source) {
 		super(source);
 		this.snapshotStack = new AssemblySnapshotException();
 	}
@@ -71,12 +69,13 @@ final class FluxOnAssembly<T> extends FluxSource<T, T> implements Fuseable, Asse
 	 * Create an assembly trace augmented with a custom description (eg. a name for a Flux
 	 * or a wider correlation ID) and exposed as a {@link Flux}.
 	 */
-	FluxOnAssembly(Publisher<? extends T> source, String description) {
+	FluxOnAssembly(Flux<? extends T> source, String description) {
 		super(source);
 		this.snapshotStack = new AssemblySnapshotException(description);
 	}
 
-	static String getStacktrace(Publisher<?> source, AssemblySnapshotException snapshotStack) {
+	static String getStacktrace(ContextualPublisher<?> source,
+			AssemblySnapshotException snapshotStack) {
 		StackTraceElement[] stes = snapshotStack.getStackTrace();
 
 		StringBuilder sb = new StringBuilder();
@@ -114,7 +113,7 @@ final class FluxOnAssembly<T> extends FluxSource<T, T> implements Fuseable, Asse
 				if (row.contains("FluxCallableOnAssembly.")) {
 					continue;
 				}
-				if (row.contains("OnOperatorCreate")) {
+				if (row.contains("OnOperatorHook")) {
 					continue;
 				}
 				if (row.contains("operatorStacktrace")) {
@@ -181,17 +180,21 @@ final class FluxOnAssembly<T> extends FluxSource<T, T> implements Fuseable, Asse
 	}
 
 	@SuppressWarnings("unchecked")
-	static <T> void subscribe(Subscriber<? super T> s, Publisher<? extends T> source,
-			AssemblySnapshotException snapshotStack) {
+	static <T> void subscribe(Subscriber<? super T> s,
+			ContextualPublisher<? extends T> source,
+			AssemblySnapshotException snapshotStack,
+			Context ctx) {
 
 		if(snapshotStack != null) {
 			if (s instanceof ConditionalSubscriber) {
 				ConditionalSubscriber<? super T> cs = (ConditionalSubscriber<? super T>) s;
 				source.subscribe(new OnAssemblyConditionalSubscriber<>(cs,
-						snapshotStack, source));
+						snapshotStack,
+						source), ctx);
 			}
 			else {
-				source.subscribe(new OnAssemblySubscriber<>(s, snapshotStack, source));
+				source.subscribe(new OnAssemblySubscriber<>(s, snapshotStack, source),
+						ctx);
 			}
 		}
 	}
@@ -222,8 +225,8 @@ final class FluxOnAssembly<T> extends FluxSource<T, T> implements Fuseable, Asse
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super T> s) {
-		subscribe(s, source, snapshotStack);
+	public void subscribe(Subscriber<? super T> s, Context ctx) {
+		subscribe(s, source, snapshotStack, ctx);
 	}
 
 	/**
@@ -261,7 +264,7 @@ final class FluxOnAssembly<T> extends FluxSource<T, T> implements Fuseable, Asse
 		/** */
 		private static final long serialVersionUID = 5278398300974016773L;
 
-		OnAssemblyException(String message, Publisher<?> parent) {
+		OnAssemblyException(String message, ContextualPublisher<?> parent) {
 			super(message);
 			chainOrder.add(Tuples.of(parent.hashCode(), extract(message, true), 0));
 		}
@@ -280,8 +283,8 @@ final class FluxOnAssembly<T> extends FluxSource<T, T> implements Fuseable, Asse
 			return this;
 		}
 
-		void add(Publisher<?> parent, String stacktrace) {
-			int key = getParentOrThis(parent).hashCode();
+		void add(ContextualPublisher<?> parent, String stacktrace) {
+			int key = getParentOrThis(Scannable.from(parent));
 			synchronized (chainOrder) {
 				int i = 0;
 
@@ -327,42 +330,38 @@ final class FluxOnAssembly<T> extends FluxSource<T, T> implements Fuseable, Asse
 		}
 	}
 
-	static Publisher<?> getParentOrThis(Publisher<?> parent) {
-		Object next = parent;
-
-		for (; ; ) {
-			if (next instanceof Receiver) {
-				Receiver r = (Receiver) next;
-				if (!(r.upstream() instanceof Publisher)){
-					break;
-				}
-				next = r.upstream();
-				if (next instanceof AssemblyOp) {
-					continue;
-				}
-				return (Publisher<?>) next;
-			}
-			break;
-		}
-		return parent;
+	static int getParentOrThis(Scannable parent) {
+		return parent.parents()
+		             .filter(s -> !(s instanceof AssemblyOp))
+		             .findFirst()
+		             .map(Object::hashCode)
+		             .orElse(parent.hashCode());
 	}
 
-	static class OnAssemblySubscriber<T> implements Subscriber<T>, QueueSubscription<T> {
+	static class OnAssemblySubscriber<T> extends CachedContextProducer<T>
+			implements InnerOperator<T, T>, QueueSubscription<T> {
 
 		final AssemblySnapshotException snapshotStack;
-		final Subscriber<? super T>     actual;
-		final Publisher<?>              parent;
+		final ContextualPublisher<?>    parent;
 
 		QueueSubscription<T> qs;
 		Subscription         s;
 		int                  fusionMode;
 
 		OnAssemblySubscriber(Subscriber<? super T> actual,
-				AssemblySnapshotException snapshotStack,
-				Publisher<?> parent) {
-			this.actual = actual;
+				AssemblySnapshotException snapshotStack, ContextualPublisher<?> parent) {
+			super(actual);
 			this.snapshotStack = snapshotStack;
 			this.parent = parent;
+		}
+
+		@Override
+		public Object scan(Attr key) {
+			switch (key) {
+				case PARENT:
+					return s;
+			}
+			return InnerOperator.super.scan(key);
 		}
 
 		@Override
@@ -476,8 +475,7 @@ final class FluxOnAssembly<T> extends FluxSource<T, T> implements Fuseable, Asse
 		final ConditionalSubscriber<? super T> actualCS;
 
 		OnAssemblyConditionalSubscriber(ConditionalSubscriber<? super T> actual,
-				AssemblySnapshotException stacktrace,
-				Publisher<?> parent) {
+				AssemblySnapshotException stacktrace, ContextualPublisher<?> parent) {
 			super(actual, stacktrace, parent);
 			this.actualCS = actual;
 		}

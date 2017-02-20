@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,13 +18,9 @@ package reactor.core.publisher;
 import java.util.Objects;
 import java.util.function.BiFunction;
 
-import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
-import reactor.core.Loopback;
-import reactor.core.Producer;
-import reactor.core.Receiver;
-import reactor.core.Trackable;
+import reactor.util.context.Context;
 
 /**
  * Accumulates the source values with an accumulator function and
@@ -44,23 +40,23 @@ import reactor.core.Trackable;
  * @param <T> the input and accumulated value type
  * @see <a href="https://github.com/reactor/reactive-streams-commons">Reactive-Streams-Commons</a>
  */
-final class FluxScan<T> extends FluxSource<T, T> {
+final class FluxScan<T> extends FluxOperator<T, T> {
 
 	final BiFunction<T, ? super T, T> accumulator;
 
-	FluxScan(Publisher<? extends T> source, BiFunction<T, ? super T, T> accumulator) {
+	FluxScan(Flux<? extends T> source, BiFunction<T, ? super T, T> accumulator) {
 		super(source);
 		this.accumulator = Objects.requireNonNull(accumulator, "accumulator");
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super T> s) {
-		source.subscribe(new ScanSubscriber<>(s, accumulator));
+	public void subscribe(Subscriber<? super T> s, Context ctx) {
+		source.subscribe(new ScanSubscriber<>(s, accumulator), ctx);
 	}
 
 	static final class ScanSubscriber<T>
-			implements Subscriber<T>, Receiver, Producer, Loopback, Subscription,
-			           Trackable {
+			implements InnerOperator<T, T> {
+
 		final Subscriber<? super T> actual;
 
 		final BiFunction<T, ? super T, T> accumulator;
@@ -128,35 +124,23 @@ final class FluxScan<T> extends FluxSource<T, T> {
 		}
 
 		@Override
-		public boolean isStarted() {
-			return s != null && !done;
+		public Object scan(Attr key) {
+			switch (key){
+				case PARENT:
+					return s;
+				case TERMINATED:
+					return done;
+				case BUFFERED:
+					return value != null ? 1 : 0;
+			}
+			return InnerOperator.super.scan(key);
 		}
 
 		@Override
-		public boolean isTerminated() {
-			return done;
-		}
-
-		@Override
-		public Object downstream() {
+		public Subscriber<? super T> actual() {
 			return actual;
 		}
 
-		@Override
-		public Object connectedInput() {
-			return accumulator;
-		}
-
-		@Override
-		public Object connectedOutput() {
-			return value;
-		}
-
-		@Override
-		public Object upstream() {
-			return s;
-		}
-		
 		@Override
 		public void request(long n) {
 			s.request(n);

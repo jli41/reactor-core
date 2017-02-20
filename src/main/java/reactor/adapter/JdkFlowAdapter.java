@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,6 +22,7 @@ import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
 import reactor.core.publisher.Flux;
+import reactor.util.context.Context;
 
 /**
  * Convert a Java 9+ {@literal Flow.Publisher} to/from a Reactive Streams {@link Publisher}.
@@ -62,7 +63,7 @@ public abstract class JdkFlowAdapter {
         }
 
         @Override
-        public void subscribe(final Subscriber<? super T> s) {
+        public void subscribe(final Subscriber<? super T> s, Context ctx) {
         	pub.subscribe(new SubscriberToRS<>(s));
         }
     }

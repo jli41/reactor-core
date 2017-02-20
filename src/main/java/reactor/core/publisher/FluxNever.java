@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@ package reactor.core.publisher;
 
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
-import reactor.core.Trackable;
+import reactor.util.context.Context;
 
 /**
  * Represents an never publisher which only calls onSubscribe.
@@ -28,16 +28,16 @@ import reactor.core.Trackable;
  * @see <a href="https://github.com/reactor/reactive-streams-commons">Reactive-Streams-Commons</a>
  */
 final class FluxNever 
-extends Flux<Object> implements Trackable {
+extends Flux<Object> {
 
-	private static final Publisher<Object> INSTANCE = new FluxNever();
+	static final Publisher<Object> INSTANCE = new FluxNever();
 
-	private FluxNever() {
+	FluxNever() {
 		// deliberately no op
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super Object> s) {
+	public void subscribe(Subscriber<? super Object> s, Context context) {
 		s.onSubscribe(Operators.emptySubscription());
 	}
 
@@ -48,17 +48,8 @@ extends Flux<Object> implements Trackable {
 	 * @return a properly parametrized instance of this never Publisher
 	 */
 	@SuppressWarnings("unchecked")
-	public static <T> Flux<T> instance() {
+	static <T> Flux<T> instance() {
 		return (Flux<T>) INSTANCE;
 	}
 
-	@Override
-	public boolean isStarted() {
-		return false;
-	}
-
-	@Override
-	public boolean isTerminated() {
-		return false;
-	}
 }

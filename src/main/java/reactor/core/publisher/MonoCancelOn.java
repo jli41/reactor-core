@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,21 +16,21 @@
 
 package reactor.core.publisher;
 
-import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import reactor.core.scheduler.Scheduler;
+import reactor.util.context.Context;
 
-final class MonoCancelOn<T> extends MonoSource<T, T> {
+final class MonoCancelOn<T> extends MonoOperator<T, T> {
 
 	final Scheduler scheduler;
 
-	public MonoCancelOn(Publisher<T> source, Scheduler scheduler) {
+	MonoCancelOn(Mono<T> source, Scheduler scheduler) {
 		super(source);
 		this.scheduler = scheduler;
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super T> s) {
-		source.subscribe(new FluxCancelOn.CancelSubscriber<T>(s, scheduler));
+	public void subscribe(Subscriber<? super T> s, Context ctx) {
+		source.subscribe(new FluxCancelOn.CancelSubscriber<T>(s, scheduler), ctx);
 	}
 }

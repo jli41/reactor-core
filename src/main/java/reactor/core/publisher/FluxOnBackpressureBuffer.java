@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,27 +21,24 @@ import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 import java.util.concurrent.atomic.AtomicLongFieldUpdater;
 import java.util.function.Consumer;
 
-import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
 import reactor.core.Exceptions;
 import reactor.core.Fuseable;
-import reactor.core.Producer;
-import reactor.core.Receiver;
-import reactor.core.Trackable;
 import reactor.util.concurrent.QueueSupplier;
+import reactor.util.context.Context;
 
 /**
  * @author Stephane Maldini
  */
-final class FluxOnBackpressureBuffer<O> extends FluxSource<O, O> implements Fuseable {
+final class FluxOnBackpressureBuffer<O> extends FluxOperator<O, O> implements Fuseable {
 
 	final Consumer<? super O> onOverflow;
 	final int                 bufferSize;
 	final boolean             unbounded;
 	final boolean             delayError;
 
-	FluxOnBackpressureBuffer(Publisher<? extends O> source,
+	FluxOnBackpressureBuffer(Flux<? extends O> source,
 			int bufferSize,
 			boolean unbounded,
 			Consumer<? super O> onOverflow) {
@@ -56,12 +53,12 @@ final class FluxOnBackpressureBuffer<O> extends FluxSource<O, O> implements Fuse
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super O> s) {
+	public void subscribe(Subscriber<? super O> s, Context ctx) {
 		source.subscribe(new BackpressureBufferSubscriber<>(s,
 				bufferSize,
 				unbounded,
 				delayError,
-				onOverflow));
+				onOverflow), ctx);
 	}
 
 	@Override
@@ -70,8 +67,7 @@ final class FluxOnBackpressureBuffer<O> extends FluxSource<O, O> implements Fuse
 	}
 
 	static final class BackpressureBufferSubscriber<T>
-			implements Subscriber<T>, QueueSubscription<T>, Trackable, Producer,
-			           Receiver {
+			implements QueueSubscription<T>, InnerOperator<T, T> {
 
 		final Subscriber<? super T> actual;
 		final Queue<T>              queue;
@@ -116,6 +112,29 @@ final class FluxOnBackpressureBuffer<O> extends FluxSource<O, O> implements Fuse
 			}
 
 			this.queue = q;
+		}
+
+		@Override
+		public Object scan(Attr key) {
+			switch (key) {
+				case PARENT:
+					return s;
+				case REQUESTED_FROM_DOWNSTREAM:
+					return requested;
+				case TERMINATED:
+					return done && queue.isEmpty();
+				case CANCELLED:
+					return s == Operators.cancelledSubscription();
+				case BUFFERED:
+					return queue.size();
+				case ERROR:
+					return error;
+				case PREFETCH:
+					return Integer.MAX_VALUE;
+				case DELAY_ERROR:
+					return delayError;
+			}
+			return InnerOperator.super.scan(key);
 		}
 
 		@Override
@@ -332,43 +351,8 @@ final class FluxOnBackpressureBuffer<O> extends FluxSource<O, O> implements Fuse
 		}
 
 		@Override
-		public boolean isCancelled() {
-			return cancelled;
-		}
-
-		@Override
-		public boolean isStarted() {
-			return s != null && !isTerminated() && !isCancelled();
-		}
-
-		@Override
-		public boolean isTerminated() {
-			return done;
-		}
-
-		@Override
-		public Throwable getError() {
-			return error;
-		}
-
-		@Override
-		public Object downstream() {
+		public Subscriber<? super T> actual() {
 			return actual;
-		}
-
-		@Override
-		public Object upstream() {
-			return s;
-		}
-
-		@Override
-		public long getCapacity() {
-			return Integer.MAX_VALUE;
-		}
-
-		@Override
-		public long requestedFromDownstream() {
-			return requested;
 		}
 
 		boolean checkTerminated(boolean d, boolean empty, Subscriber<? super T> a) {

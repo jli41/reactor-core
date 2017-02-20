@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,10 +18,13 @@ package reactor.core.publisher;
 
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
+import java.util.stream.Stream;
 
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
+import reactor.core.Scannable;
+import reactor.util.context.Context;
 
 /**
  * Skips values from the main publisher until the other publisher signals
@@ -32,32 +35,50 @@ import org.reactivestreams.Subscription;
  *
  * @see <a href="https://github.com/reactor/reactive-streams-commons">https://github.com/reactor/reactive-streams-commons</a>
  */
-final class FluxSkipUntilOther<T, U> extends FluxSource<T, T> {
+final class FluxSkipUntilOther<T, U> extends FluxOperator<T, T> {
 
 	final Publisher<U> other;
 
-	FluxSkipUntilOther(Publisher<? extends T> source, Publisher<U> other) {
+	FluxSkipUntilOther(Flux<? extends T> source, Publisher<U> other) {
 		super(source);
 		this.other = Objects.requireNonNull(other, "other");
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super T> s) {
+	public void subscribe(Subscriber<? super T> s, Context ctx) {
 		SkipUntilMainSubscriber<T> mainSubscriber = new SkipUntilMainSubscriber<>(s);
 
 		SkipUntilOtherSubscriber<U> otherSubscriber = new SkipUntilOtherSubscriber<>(mainSubscriber);
 
 		other.subscribe(otherSubscriber);
 
-		source.subscribe(mainSubscriber);
+		source.subscribe(mainSubscriber, ctx);
 	}
 
-	static final class SkipUntilOtherSubscriber<U> implements Subscriber<U> {
+	static final class SkipUntilOtherSubscriber<U> implements InnerConsumer<U> {
 
 		final SkipUntilMainSubscriber<?> main;
 
 		SkipUntilOtherSubscriber(SkipUntilMainSubscriber<?> main) {
 			this.main = main;
+		}
+
+		@Override
+		public Context currentContext() {
+			return main.currentContext();
+		}
+
+		@Override
+		public Object scan(Attr key) {
+			switch (key){
+				case CANCELLED:
+					return main.other == Operators.cancelledSubscription();
+				case PARENT:
+					return main.other;
+				case ACTUAL:
+					return main;
+			}
+			return null;
 		}
 
 		@Override
@@ -101,9 +122,9 @@ final class FluxSkipUntilOther<T, U> extends FluxSource<T, T> {
 
 	}
 
-	static final class SkipUntilMainSubscriber<T> implements Subscriber<T>, Subscription {
-
-		final Subscriber<T> actual;
+	static final class SkipUntilMainSubscriber<T>
+			extends CachedContextProducer<T>
+			implements InnerOperator<T, T> {
 
 		volatile Subscription main;
 		@SuppressWarnings("rawtypes")
@@ -124,7 +145,23 @@ final class FluxSkipUntilOther<T, U> extends FluxSource<T, T> {
 		volatile boolean gate;
 
 		SkipUntilMainSubscriber(Subscriber<? super T> actual) {
-			this.actual = Operators.serialize(actual);
+			super(Operators.serialize(actual));
+		}
+
+		@Override
+		public Object scan(Attr key) {
+			switch (key){
+				case PARENT:
+					return main;
+				case CANCELLED:
+					return main == Operators.cancelledSubscription();
+			}
+			return super.scan(key);
+		}
+
+		@Override
+		public Stream<? extends Scannable> inners() {
+			return Stream.of(Scannable.from(other));
 		}
 
 		void setOther(Subscription s) {

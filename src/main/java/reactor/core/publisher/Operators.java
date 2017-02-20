@@ -24,16 +24,18 @@ import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
 import java.util.function.BiFunction;
 import java.util.function.Consumer;
 
+import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
 import reactor.core.Exceptions;
 import reactor.core.Fuseable;
-import reactor.core.Loopback;
 import reactor.core.Producer;
 import reactor.core.Receiver;
+import reactor.core.Scannable;
 import reactor.core.Trackable;
 import reactor.util.Logger;
 import reactor.util.Loggers;
+import reactor.util.context.Context;
 
 /**
  * An helper to support "Operator" writing, handle noop subscriptions, validate request
@@ -186,6 +188,15 @@ public abstract class Operators {
 	public static void complete(Subscriber<?> s) {
 		s.onSubscribe(EmptySubscription.INSTANCE);
 		s.onComplete();
+	}
+
+	@SuppressWarnings("unchecked")
+	static <T> ContextualPublisher<T> contextual(Publisher<T> source) {
+		if (source instanceof ContextualPublisher) {
+			return (ContextualPublisher<T>) source;
+		}
+		Objects.requireNonNull(source, "source");
+		return (s, ctx) -> source.subscribe(s);
 	}
 
 	/**
@@ -622,6 +633,16 @@ public abstract class Operators {
 		return false;
 	}
 
+	@SuppressWarnings("unchecked")
+	static <T> void trySubscribeContext(Publisher<T> source, Subscriber<? super T> s, Context ctx) {
+		if (source instanceof ContextualPublisher) {
+			((ContextualPublisher<T>) source).subscribe(s, ctx);
+		}
+		else{
+			source.subscribe(s);
+		}
+	}
+
 	/**
 	 * Check Subscription current state and cancel new Subscription if different null, returning true if
 	 * ready to subscribe.
@@ -684,8 +705,17 @@ public abstract class Operators {
 	}
 
 	//
-	enum CancelledSubscription implements Subscription, Trackable {
+	enum CancelledSubscription implements Subscription, Scannable {
 		INSTANCE;
+
+		@Override
+		public Object scan(Attr key) {
+			switch (key) {
+				case CANCELLED:
+					return true;
+			}
+			return null;
+		}
 
 		@Override
 		public void cancel() {
@@ -693,18 +723,15 @@ public abstract class Operators {
 		}
 
 		@Override
-		public boolean isCancelled() {
-			return true;
-		}
-
-		@Override
 		public void request(long n) {
 			// deliberately no op
 		}
 
+
+
 	}
 
-	enum EmptySubscription implements Fuseable.QueueSubscription<Object> {
+	enum EmptySubscription implements Fuseable.QueueSubscription<Object>, Scannable {
 		INSTANCE;
 
 		@Override
@@ -738,9 +765,19 @@ public abstract class Operators {
 		}
 
 		@Override
+		public Object scan(Attr key) {
+			switch (key) {
+				case TERMINATED:
+					return true;
+			}
+			return null;
+		}
+
+		@Override
 		public int size() {
 			return 0;
 		}
+
 	}
 
 	/**
@@ -748,7 +785,7 @@ public abstract class Operators {
 	 * they need to be cancelled or requested at any time.
 	 */
 	public static class DeferredSubscription
-			implements Subscription, Receiver, Trackable {
+			implements Subscription, Scannable, Receiver, Trackable {
 
 		volatile Subscription s;
 		volatile long requested;
@@ -764,24 +801,22 @@ public abstract class Operators {
 			}
 		}
 
-		/**
-		 * Returns true if this arbiter has been cancelled.
-		 *
-		 * @return true if this arbiter has been cancelled
-		 */
 		@Override
-		public final boolean isCancelled() {
-			return s == cancelledSubscription();
+		public Object scan(Attr key) {
+			switch (key) {
+				case PARENT:
+					return s;
+				case REQUESTED_FROM_DOWNSTREAM:
+					return requested;
+				case CANCELLED:
+					return s == Operators.cancelledSubscription();
+			}
+			return null;
 		}
 
 		@Override
-		public final boolean isStarted() {
-			return s != null;
-		}
-
-		@Override
-		public final boolean isTerminated() {
-			return isCancelled();
+		public Object upstream() {
+			return s;
 		}
 
 		@Override
@@ -802,11 +837,6 @@ public abstract class Operators {
 					}
 				}
 			}
-		}
-
-		@Override
-		public final long requestedFromDownstream() {
-			return requested;
 		}
 
 		/**
@@ -850,10 +880,6 @@ public abstract class Operators {
 			return false;
 		}
 
-		@Override
-		public Subscription upstream() {
-			return s;
-		}
 		static final AtomicReferenceFieldUpdater<DeferredSubscription, Subscription> S =
 				AtomicReferenceFieldUpdater.newUpdater(DeferredSubscription.class, Subscription.class, "s");
 		static final AtomicLongFieldUpdater<DeferredSubscription> REQUESTED =
@@ -869,11 +895,10 @@ public abstract class Operators {
 	 * @param <I> The upstream sequence type
 	 * @param <O> The downstream sequence type
 	 */
-	public static class MonoSubscriber<I, O> implements Subscriber<I>,
-	                                                    Trackable,
-	                                                    Receiver, Producer,
-	                                                    Fuseable, //for constants only
-	                                                    Fuseable.QueueSubscription<O> {
+	public static class MonoSubscriber<I, O>
+			implements Trackable, Receiver, InnerOperator<I, O>, Producer,
+			           Fuseable, //for constants only
+			           Fuseable.QueueSubscription<O> {
 
 		protected final Subscriber<? super O> actual;
 
@@ -890,9 +915,32 @@ public abstract class Operators {
 		}
 
 		@Override
+		public Object scan(Attr key) {
+			switch (key) {
+				case CANCELLED:
+					return isCancelled();
+				case TERMINATED:
+					return state == HAS_REQUEST_HAS_VALUE || state == NO_REQUEST_HAS_VALUE;
+				case PREFETCH:
+					return Integer.MAX_VALUE;
+			}
+			return InnerOperator.super.scan(key);
+		}
+
+		@Override
+		public Object downstream() {
+			return actual();
+		}
+
+		@Override
 		public final void clear() {
 			STATE.lazySet(this, FUSED_CONSUMED);
 			value = null;
+		}
+
+		@Override
+		public Object upstream() {
+			return value;
 		}
 
 		/**
@@ -944,7 +992,7 @@ public abstract class Operators {
 		}
 
 		@Override
-		public final Subscriber<? super O> downstream() {
+		public final Subscriber<? super O> actual() {
 			return actual;
 		}
 
@@ -959,16 +1007,6 @@ public abstract class Operators {
 		@Override
 		public final boolean isEmpty() {
 			return this.state != FUSED_READY;
-		}
-
-		@Override
-		public boolean isStarted() {
-			return !isTerminated();
-		}
-
-		@Override
-		public boolean isTerminated() {
-			return isCancelled();
 		}
 
 		@Override
@@ -1052,10 +1090,6 @@ public abstract class Operators {
 			return isEmpty() ? 0 : 1;
 		}
 
-		@Override
-		public Object upstream() {
-			return value; //FIXME to be removed/changed to Loopback
-		}
 		/**
 		 * Indicates this Subscription has no value and not requested yet.
 		 */
@@ -1102,9 +1136,11 @@ public abstract class Operators {
 	 *
 	 * @param <I> the input value type
 	 * @param <O> the output value type
+	 * @deprecated use {@link BaseSubscriber}
 	 */
+	@Deprecated
 	public static class SubscriberAdapter<I, O>
-			implements Subscriber<I>, Subscription, Trackable, Receiver, Producer{
+			implements InnerOperator<I, O>, Trackable, Receiver, Producer {
 
 		protected final Subscriber<? super O> subscriber;
 
@@ -1112,6 +1148,11 @@ public abstract class Operators {
 
 		public SubscriberAdapter(Subscriber<? super O> subscriber) {
 			this.subscriber = subscriber;
+		}
+
+		@Override
+		public Object downstream() {
+			return actual();
 		}
 
 		@Override
@@ -1124,35 +1165,17 @@ public abstract class Operators {
 		}
 
 		@Override
-		public Subscriber<? super O> downstream() {
+		public Object scan(Attr key) {
+			switch (key) {
+				case PARENT:
+					return subscription;
+			}
+			return InnerOperator.super.scan(key);
+		}
+
+		@Override
+		public Subscriber<? super O> actual() {
 			return subscriber;
-		}
-
-		@Override
-		public long getCapacity() {
-			return subscriber != null && Trackable.class.isAssignableFrom(subscriber
-					.getClass()) ?
-					((Trackable) subscriber).getCapacity() :
-					Long.MAX_VALUE;
-		}
-
-		@Override
-		public long getPending() {
-			return subscriber != null && Trackable.class.isAssignableFrom(subscriber
-					.getClass()) ?
-					((Trackable) subscriber).getPending() :
-					-1L;
-		}
-
-		@Override
-		public boolean isStarted() {
-			return subscription != null;
-		}
-
-		@Override
-		public boolean isTerminated() {
-			return null != subscription && subscription instanceof Trackable && (
-					(Trackable) subscription).isTerminated();
 		}
 
 		@Override
@@ -1214,17 +1237,17 @@ public abstract class Operators {
 			return getClass().getSimpleName();
 		}
 
-		@Override
-		public Subscription upstream() {
-			return subscription;
-		}
-
 		/**
 		 * Hook for further processing of onSubscribe's Subscription.
 		 * @param subscription the subscription to optionally process
 		 */
 		protected void doOnSubscribe(Subscription subscription) {
 			subscriber.onSubscribe(this);
+		}
+
+		@Override
+		public Subscription upstream() {
+			return subscription;
 		}
 
 		@SuppressWarnings("unchecked")
@@ -1274,27 +1297,41 @@ public abstract class Operators {
 	 * @param <O> the output value type
 	 */
 	abstract static class MultiSubscriptionSubscriber<I, O>
-			implements Subscription, Subscriber<I>, Producer, Trackable,
-			           Receiver {
+			implements InnerOperator<I, O> {
 
-		protected final Subscriber<? super O> subscriber;
+		final Subscriber<? super O> actual;
+
+		final Context context;
+
 		protected boolean unbounded;
 		/**
 		 * The current subscription which may null if no Subscriptions have been set.
 		 */
-		Subscription actual;
+		Subscription subscription;
 		/**
 		 * The current outstanding request amount.
 		 */
-		long requested;
+		long         requested;
 		volatile Subscription missedSubscription;
 		volatile long missedRequested;
 		volatile long missedProduced;
 		volatile int wip;
 		volatile boolean cancelled;
 
-		public MultiSubscriptionSubscriber(Subscriber<? super O> subscriber) {
-			this.subscriber = subscriber;
+		public MultiSubscriptionSubscriber(Subscriber<? super O> actual, Context
+				context) {
+			this.actual = actual;
+			this.context = context;
+		}
+
+		@Override
+		public Subscriber<? super O> actual() {
+			return actual;
+		}
+
+		@Override
+		public Context currentContext() {
+			return context;
 		}
 
 		@Override
@@ -1307,37 +1344,34 @@ public abstract class Operators {
 		}
 
 		@Override
-		public final Subscriber<? super O> downstream() {
-			return subscriber;
-		}
-
-		@Override
-		public final boolean isCancelled() {
-			return cancelled;
-		}
-
-		@Override
-		public boolean isStarted() {
-			return upstream() != null;
-		}
-
-		@Override
-		public boolean isTerminated() {
-			return false;
+		public Object scan(Attr key) {
+			switch (key) {
+				case PARENT:
+					return missedSubscription != null ? missedSubscription : subscription;
+				case CANCELLED:
+					return isCancelled();
+				case REQUESTED_FROM_DOWNSTREAM:
+					return Operators.addCap(requested, missedRequested);
+			}
+			return InnerOperator.super.scan(key);
 		}
 
 		public final boolean isUnbounded() {
 			return unbounded;
 		}
 
+		final boolean isCancelled() {
+			return cancelled;
+		}
+
 		@Override
 		public void onComplete() {
-			subscriber.onComplete();
+			actual.onComplete();
 		}
 
 		@Override
 		public void onError(Throwable t) {
-			subscriber.onError(t);
+			actual.onError(t);
 		}
 
 		@Override
@@ -1377,7 +1411,7 @@ public abstract class Operators {
 			drain();
 		}
 
-		public final void producedOne() {
+		final void producedOne() {
 			if (unbounded) {
 				return;
 			}
@@ -1425,7 +1459,7 @@ public abstract class Operators {
 	                        unbounded = true;
 	                    }
 	                }
-	                Subscription a = actual;
+		            Subscription a = subscription;
 
 	                if (WIP.decrementAndGet(this) != 0) {
 	                    drainLoop();
@@ -1444,11 +1478,6 @@ public abstract class Operators {
 	        }
 		}
 
-		@Override
-		public final long requestedFromDownstream() {
-			return requested + missedRequested;
-		}
-
 		public final void set(Subscription s) {
 		    if (cancelled) {
 	            s.cancel();
@@ -1458,13 +1487,13 @@ public abstract class Operators {
 	        Objects.requireNonNull(s);
 
 	        if (wip == 0 && WIP.compareAndSet(this, 0, 1)) {
-	            Subscription a = actual;
+		        Subscription a = subscription;
 
 	            if (a != null && shouldCancelCurrent()) {
 	                a.cancel();
 	            }
 
-	            actual = s;
+		        subscription = s;
 
 	            long r = requested;
 
@@ -1484,11 +1513,6 @@ public abstract class Operators {
 	            a.cancel();
 	        }
 	        drain();
-		}
-
-		@Override
-		public final Subscription upstream() {
-			return actual != null ? actual : missedSubscription;
 		}
 
 		/**
@@ -1531,12 +1555,12 @@ public abstract class Operators {
 	                mp = MISSED_PRODUCED.getAndSet(this, 0L);
 	            }
 
-	            Subscription a = actual;
+		        Subscription a = subscription;
 
 	            if (cancelled) {
 	                if (a != null) {
 	                    a.cancel();
-	                    actual = null;
+		                subscription = null;
 	                }
 	                if (ms != null) {
 	                    ms.cancel();
@@ -1563,9 +1587,9 @@ public abstract class Operators {
 	                    if (a != null && shouldCancelCurrent()) {
 	                        a.cancel();
 	                    }
-	                    actual = ms;
-	                    if (r != 0L) {
-	                        requestAmount = addCap(requestAmount, r);
+		                subscription = ms;
+		                if (r != 0L) {
+			                requestAmount = addCap(requestAmount, r);
 	                        requestTarget = ms;
 	                    }
 	                } else if (mr != 0L && a != null) {
@@ -1608,7 +1632,7 @@ public abstract class Operators {
 	 * @param <T> the value type
 	 */
 	static final class ScalarSubscription<T>
-			implements Fuseable.QueueSubscription<T>, Producer, Receiver {
+			implements Fuseable.SynchronousSubscription<T>, InnerProducer<T> {
 
 		final Subscriber<? super T> actual;
 
@@ -1631,13 +1655,13 @@ public abstract class Operators {
 		}
 
 		@Override
-		public final Subscriber<? super T> downstream() {
-			return actual;
+		public boolean isEmpty() {
+			return once != 0;
 		}
 
 		@Override
-		public boolean isEmpty() {
-			return once != 0;
+		public Subscriber<? super T> actual() {
+			return actual;
 		}
 
 		@Override
@@ -1647,6 +1671,16 @@ public abstract class Operators {
 				return value;
 			}
 			return null;
+		}
+
+		@Override
+		public Object scan(Attr key) {
+			switch (key) {
+				case TERMINATED:
+				case CANCELLED:
+					return once == 1;
+			}
+			return InnerProducer.super.scan(key);
 		}
 
 		@Override
@@ -1675,10 +1709,6 @@ public abstract class Operators {
 			return isEmpty() ? 0 : 1;
 		}
 
-		@Override
-		public Object upstream() {
-			return value;
-		}
 		@SuppressWarnings("rawtypes")
 		static final AtomicIntegerFieldUpdater<ScalarSubscription> ONCE =
 				AtomicIntegerFieldUpdater.newUpdater(ScalarSubscription.class, "once");

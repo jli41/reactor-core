@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,15 +19,10 @@ package reactor.core.publisher;
 import java.util.Objects;
 import java.util.function.Function;
 
-import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
 import reactor.core.Fuseable;
-import reactor.core.Loopback;
-import reactor.core.Producer;
-import reactor.core.Receiver;
-import reactor.core.Trackable;
-import reactor.core.publisher.FluxMapFuseable.MapFuseableSubscriber;
+import reactor.util.context.Context;
 
 /**
  * Maps the values of the source publisher one-on-one via a mapper function.
@@ -37,7 +32,7 @@ import reactor.core.publisher.FluxMapFuseable.MapFuseableSubscriber;
  *
  * @see <a href="https://github.com/reactor/reactive-streams-commons">Reactive-Streams-Commons</a>
  */
-final class FluxMap<T, R> extends FluxSource<T, R> {
+final class FluxMap<T, R> extends FluxOperator<T, R> {
 
 	final Function<? super T, ? extends R> mapper;
 
@@ -49,7 +44,7 @@ final class FluxMap<T, R> extends FluxSource<T, R> {
 	 *
 	 * @throws NullPointerException if either {@code source} or {@code mapper} is null.
 	 */
-	FluxMap(Publisher<? extends T> source,
+	FluxMap(ContextualPublisher<? extends T> source,
 			Function<? super T, ? extends R> mapper) {
 		super(source);
 		this.mapper = Objects.requireNonNull(mapper, "mapper");
@@ -57,19 +52,18 @@ final class FluxMap<T, R> extends FluxSource<T, R> {
 
 	@Override
 	@SuppressWarnings("unchecked")
-	public void subscribe(Subscriber<? super R> s) {
+	public void subscribe(Subscriber<? super R> s, Context ctx) {
 		if (s instanceof Fuseable.ConditionalSubscriber) {
 			Fuseable.ConditionalSubscriber<? super R> cs =
 					(Fuseable.ConditionalSubscriber<? super R>) s;
-			source.subscribe(new MapConditionalSubscriber<>(cs, mapper));
+			source.subscribe(new MapConditionalSubscriber<>(cs, mapper), ctx);
 			return;
 		}
-		source.subscribe(new MapSubscriber<>(s, mapper));
+		source.subscribe(new MapSubscriber<>(s, mapper), ctx);
 	}
 
 	static final class MapSubscriber<T, R>
-			implements Subscriber<T>, Receiver, Producer, Loopback, Subscription,
-			           Trackable {
+			implements InnerOperator<T, R> {
 
 		final Subscriber<? super R>            actual;
 		final Function<? super T, ? extends R> mapper;
@@ -78,7 +72,7 @@ final class FluxMap<T, R> extends FluxSource<T, R> {
 
 		Subscription s;
 
-		public MapSubscriber(Subscriber<? super R> actual,
+		MapSubscriber(Subscriber<? super R> actual,
 				Function<? super T, ? extends R> mapper) {
 			this.actual = actual;
 			this.mapper = mapper;
@@ -137,28 +131,19 @@ final class FluxMap<T, R> extends FluxSource<T, R> {
 		}
 
 		@Override
-		public boolean isStarted() {
-			return s != null && !done;
+		public Object scan(Attr key) {
+			switch (key) {
+				case PARENT:
+					return s;
+				case TERMINATED:
+					return done;
+			}
+			return InnerOperator.super.scan(key);
 		}
 
 		@Override
-		public boolean isTerminated() {
-			return done;
-		}
-
-		@Override
-		public Object downstream() {
+		public Subscriber<? super R> actual() {
 			return actual;
-		}
-
-		@Override
-		public Object connectedInput() {
-			return mapper;
-		}
-
-		@Override
-		public Object upstream() {
-			return s;
 		}
 
 		@Override
@@ -173,8 +158,7 @@ final class FluxMap<T, R> extends FluxSource<T, R> {
 	}
 
 	static final class MapConditionalSubscriber<T, R>
-			implements Fuseable.ConditionalSubscriber<T>, Receiver, Producer, Loopback,
-			           Subscription, Trackable {
+			implements Fuseable.ConditionalSubscriber<T>, InnerOperator<T, R> {
 
 		final Fuseable.ConditionalSubscriber<? super R> actual;
 		final Function<? super T, ? extends R>          mapper;
@@ -183,7 +167,7 @@ final class FluxMap<T, R> extends FluxSource<T, R> {
 
 		Subscription s;
 
-		public MapConditionalSubscriber(Fuseable.ConditionalSubscriber<? super R> actual,
+		MapConditionalSubscriber(Fuseable.ConditionalSubscriber<? super R> actual,
 				Function<? super T, ? extends R> mapper) {
 			this.actual = actual;
 			this.mapper = mapper;
@@ -264,28 +248,19 @@ final class FluxMap<T, R> extends FluxSource<T, R> {
 		}
 
 		@Override
-		public boolean isStarted() {
-			return s != null && !done;
+		public Object scan(Attr key) {
+			switch (key) {
+				case PARENT:
+					return s;
+				case TERMINATED:
+					return done;
+			}
+			return InnerOperator.super.scan(key);
 		}
 
 		@Override
-		public boolean isTerminated() {
-			return done;
-		}
-
-		@Override
-		public Object downstream() {
+		public Subscriber<? super R> actual() {
 			return actual;
-		}
-
-		@Override
-		public Object connectedInput() {
-			return mapper;
-		}
-
-		@Override
-		public Object upstream() {
-			return s;
 		}
 
 		@Override

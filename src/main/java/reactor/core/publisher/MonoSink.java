@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,8 +15,12 @@
  */
 package reactor.core.publisher;
 
+import java.util.function.Function;
+
+import org.reactivestreams.Subscriber;
 import reactor.core.Cancellation;
 import reactor.core.Disposable;
+import reactor.util.context.Context;
 
 /**
  * Wrapper API around an actual downstream Subscriber
@@ -31,6 +35,16 @@ public interface MonoSink<T> {
      * terminating methods has no effect.
      */
     void success();
+
+	/**
+	 * Immediately propagate a {@link Context} to the child {@link Subscriber} given an
+	 * eventually non empty parent {@link Context}.
+	 *
+	 * @param doOnContext a {@link Function} given the parent context and producing a
+	 * new one to be pushed
+	 * @return this sink
+	 */
+	MonoSink<T> contextualize(Function<Context, Context> doOnContext);
 
     /**
      * Complete with the given value.
@@ -70,10 +84,10 @@ public interface MonoSink<T> {
 
     /**
      * Sets a cancellation callback triggered by
-     * downstreams cancel().
+     * downstream cancel().
      * <p>Calling this method more than once has no effect.
      * @param c the cancellation callback
      */
 	@Deprecated
-	void setCancellation(Cancellation c);
+	MonoSink<T> setCancellation(Cancellation c);
 }

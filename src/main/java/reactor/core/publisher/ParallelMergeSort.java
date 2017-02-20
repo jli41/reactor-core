@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,10 +22,12 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 import java.util.concurrent.atomic.AtomicLongFieldUpdater;
 import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
+import java.util.stream.Stream;
 
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
-import reactor.core.Exceptions;
+import reactor.core.Scannable;
+import reactor.util.context.Context;
 
 /**
  * Given sorted rail sequences (according to the provided comparator) as List
@@ -35,7 +37,7 @@ import reactor.core.Exceptions;
  *
  * @param <T> the value type
  */
-final class ParallelMergeSort<T> extends Flux<T> {
+final class ParallelMergeSort<T> extends Flux<T> implements Scannable {
 
 	final ParallelFlux<List<T>> source;
 
@@ -53,19 +55,28 @@ final class ParallelMergeSort<T> extends Flux<T> {
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super T> s) {
-		MergeSortSubscription<T> parent =
-				new MergeSortSubscription<>(s, source.parallelism(), comparator);
+	public void subscribe(Subscriber<? super T> s, Context ctx) {
+		MergeSortMain<T> parent =
+				new MergeSortMain<>(ctx, s, source.parallelism(), comparator);
 		s.onSubscribe(parent);
 
-		source.subscribe(parent.subscribers);
+		source.subscribe(parent.subscribers, ctx);
 	}
 
-	static final class MergeSortSubscription<T> implements Subscription {
+	@Override
+	public Object scan(Attr key) {
+		switch (key){
+			case PARENT:
+				return source;
+			case PREFETCH:
+				return getPrefetch();
+		}
+		return null;
+	}
 
-		final Subscriber<? super T> actual;
+	static final class MergeSortMain<T> extends CachedContextProducer<T> {
 
-		final MergeSortInnerSubscriber<T>[] subscribers;
+		final MergeSortInner<T>[] subscribers;
 
 		final List<T>[] lists;
 
@@ -75,47 +86,68 @@ final class ParallelMergeSort<T> extends Flux<T> {
 
 		volatile int wip;
 		@SuppressWarnings("rawtypes")
-		static final AtomicIntegerFieldUpdater<MergeSortSubscription> WIP =
-				AtomicIntegerFieldUpdater.newUpdater(MergeSortSubscription.class, "wip");
+		static final AtomicIntegerFieldUpdater<MergeSortMain> WIP =
+				AtomicIntegerFieldUpdater.newUpdater(MergeSortMain.class, "wip");
 
 		volatile long requested;
 		@SuppressWarnings("rawtypes")
-		static final AtomicLongFieldUpdater<MergeSortSubscription> REQUESTED =
-				AtomicLongFieldUpdater.newUpdater(MergeSortSubscription.class,
+		static final AtomicLongFieldUpdater<MergeSortMain> REQUESTED =
+				AtomicLongFieldUpdater.newUpdater(MergeSortMain.class,
 						"requested");
 
 		volatile boolean cancelled;
 
 		volatile int remaining;
 		@SuppressWarnings("rawtypes")
-		static final AtomicIntegerFieldUpdater<MergeSortSubscription> REMAINING =
-				AtomicIntegerFieldUpdater.newUpdater(MergeSortSubscription.class,
+		static final AtomicIntegerFieldUpdater<MergeSortMain> REMAINING =
+				AtomicIntegerFieldUpdater.newUpdater(MergeSortMain.class,
 						"remaining");
 
 		volatile Throwable error;
 		@SuppressWarnings("rawtypes")
-		static final AtomicReferenceFieldUpdater<MergeSortSubscription, Throwable>
+		static final AtomicReferenceFieldUpdater<MergeSortMain, Throwable>
 				ERROR =
-				AtomicReferenceFieldUpdater.newUpdater(MergeSortSubscription.class,
+				AtomicReferenceFieldUpdater.newUpdater(MergeSortMain.class,
 						Throwable.class,
 						"error");
 
 		@SuppressWarnings("unchecked")
-		MergeSortSubscription(Subscriber<? super T> actual,
+		MergeSortMain(Context ctx, Subscriber<? super T> actual,
 				int n,
 				Comparator<? super T> comparator) {
-			this.actual = actual;
+			super(actual);
+			this.context = ctx;
 			this.comparator = comparator;
 
-			MergeSortInnerSubscriber<T>[] s = new MergeSortInnerSubscriber[n];
+			MergeSortInner<T>[] s = new MergeSortInner[n];
 
 			for (int i = 0; i < n; i++) {
-				s[i] = new MergeSortInnerSubscriber<>(this, i);
+				s[i] = new MergeSortInner<>(this, i);
 			}
 			this.subscribers = s;
 			this.lists = new List[n];
 			this.indexes = new int[n];
 			REMAINING.lazySet(this, n);
+		}
+
+		@Override
+		public Object scan(Attr key) {
+			switch (key){
+				case ERROR:
+					return error;
+				case REQUESTED_FROM_DOWNSTREAM:
+					return requested;
+				case CANCELLED:
+					return cancelled;
+				case BUFFERED:
+					return subscribers.length - remaining;
+			}
+			return super.scan(key);
+		}
+
+		@Override
+		public Stream<? extends Scannable> inners() {
+			return Stream.of(subscribers);
 		}
 
 		@Override
@@ -140,7 +172,7 @@ final class ParallelMergeSort<T> extends Flux<T> {
 		}
 
 		void cancelAll() {
-			for (MergeSortInnerSubscriber<T> s : subscribers) {
+			for (MergeSortInner<T> s : subscribers) {
 				s.cancel();
 			}
 		}
@@ -275,23 +307,43 @@ final class ParallelMergeSort<T> extends Flux<T> {
 		}
 	}
 
-	static final class MergeSortInnerSubscriber<T> implements Subscriber<List<T>> {
+	static final class MergeSortInner<T> implements InnerConsumer<List<T>> {
 
-		final MergeSortSubscription<T> parent;
+		final MergeSortMain<T> parent;
 
 		final int index;
 
 		volatile Subscription s;
 		@SuppressWarnings("rawtypes")
-		static final AtomicReferenceFieldUpdater<MergeSortInnerSubscriber, Subscription>
+		static final AtomicReferenceFieldUpdater<MergeSortInner, Subscription>
 				S =
-				AtomicReferenceFieldUpdater.newUpdater(MergeSortInnerSubscriber.class,
+				AtomicReferenceFieldUpdater.newUpdater(MergeSortInner.class,
 						Subscription.class,
 						"s");
 
-		MergeSortInnerSubscriber(MergeSortSubscription<T> parent, int index) {
+		MergeSortInner(MergeSortMain<T> parent, int index) {
 			this.parent = parent;
 			this.index = index;
+		}
+
+		@Override
+		public Context currentContext() {
+			return parent.currentContext();
+		}
+
+		@Override
+		public Object scan(Attr key) {
+			switch(key){
+				case CANCELLED:
+					return s == Operators.cancelledSubscription();
+				case PARENT:
+					return s;
+				case ACTUAL:
+					return parent;
+				case PREFETCH:
+					return Integer.MAX_VALUE;
+			}
+			return null;
 		}
 
 		@Override

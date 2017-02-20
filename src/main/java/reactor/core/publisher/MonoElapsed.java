@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,26 +16,26 @@
 
 package reactor.core.publisher;
 
-import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import reactor.core.Fuseable;
 import reactor.core.scheduler.Scheduler;
+import reactor.util.context.Context;
 import reactor.util.function.Tuple2;
 
 /**
  * @author Stephane Maldini
  */
-final class MonoElapsed<T> extends MonoSource<T, Tuple2<Long, T>> implements Fuseable {
+final class MonoElapsed<T> extends MonoOperator<T, Tuple2<Long, T>> implements Fuseable {
 
 	final Scheduler scheduler;
 
-	MonoElapsed(Publisher<T> source, Scheduler scheduler) {
+	MonoElapsed(Mono<T> source, Scheduler scheduler) {
 		super(source);
 		this.scheduler = scheduler;
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super Tuple2<Long, T>> s) {
-		source.subscribe(new FluxElapsed.ElapsedSubscriber<T>(s, scheduler));
+	public void subscribe(Subscriber<? super Tuple2<Long, T>> s, Context ctx) {
+		source.subscribe(new FluxElapsed.ElapsedSubscriber<T>(s, scheduler), ctx);
 	}
 }

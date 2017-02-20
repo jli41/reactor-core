@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,8 +16,6 @@
 
 package reactor.core.publisher;
 
-import java.util.Arrays;
-import java.util.Iterator;
 import java.util.Objects;
 import java.util.Queue;
 import java.util.concurrent.Callable;
@@ -26,16 +24,15 @@ import java.util.concurrent.atomic.AtomicLongFieldUpdater;
 import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
 import java.util.function.Function;
 import java.util.function.Supplier;
+import java.util.stream.Stream;
 
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
 import reactor.core.Exceptions;
 import reactor.core.Fuseable;
-import reactor.core.MultiReceiver;
-import reactor.core.Producer;
-import reactor.core.Receiver;
-import reactor.core.Trackable;
+import reactor.core.Scannable;
+import reactor.util.context.Context;
 
 /**
  * Maps a sequence of values each into a Publisher and flattens them
@@ -45,7 +42,7 @@ import reactor.core.Trackable;
  * @param <R> the result value type
  * @see <a href="https://github.com/reactor/reactive-streams-commons">Reactive-Streams-Commons</a>
  */
-final class FluxFlatMap<T, R> extends FluxSource<T, R> {
+final class FluxFlatMap<T, R> extends FluxOperator<T, R> {
 
 	final Function<? super T, ? extends Publisher<? extends R>> mapper;
 
@@ -59,7 +56,7 @@ final class FluxFlatMap<T, R> extends FluxSource<T, R> {
 
 	final Supplier<? extends Queue<R>> innerQueueSupplier;
 
-	public FluxFlatMap(Publisher<? extends T> source,
+	FluxFlatMap(ContextualPublisher<? extends T> source,
 			Function<? super T, ? extends Publisher<? extends R>> mapper,
 			boolean delayError,
 			int maxConcurrency,
@@ -89,7 +86,7 @@ final class FluxFlatMap<T, R> extends FluxSource<T, R> {
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super R> s) {
+	public void subscribe(Subscriber<? super R> s, Context ctx) {
 
 		if (trySubscribeScalarMap(source, s, mapper, false)) {
 			return;
@@ -101,7 +98,7 @@ final class FluxFlatMap<T, R> extends FluxSource<T, R> {
 				maxConcurrency,
 				mainQueueSupplier,
 				prefetch,
-				innerQueueSupplier));
+				innerQueueSupplier), ctx);
 	}
 
 	/**
@@ -181,11 +178,8 @@ final class FluxFlatMap<T, R> extends FluxSource<T, R> {
 		return false;
 	}
 
-	static final class FlatMapMain<T, R> extends SpscFreeListTracker<FlatMapInner<R>>
-			implements Subscriber<T>, Subscription, Receiver, MultiReceiver, Producer,
-			           Trackable {
-
-		final Subscriber<? super R> actual;
+	static final class FlatMapMain<T, R> extends FlatMapTracker<FlatMapInner<R>, R>
+			implements InnerOperator<T, R> {
 
 		final Function<? super T, ? extends Publisher<? extends R>> mapper;
 
@@ -236,14 +230,14 @@ final class FluxFlatMap<T, R> extends FluxSource<T, R> {
 
 		int produced;
 
-		public FlatMapMain(Subscriber<? super R> actual,
+		FlatMapMain(Subscriber<? super R> actual,
 				Function<? super T, ? extends Publisher<? extends R>> mapper,
 				boolean delayError,
 				int maxConcurrency,
 				Supplier<? extends Queue<R>> mainQueueSupplier,
 				int prefetch,
 				Supplier<? extends Queue<R>> innerQueueSupplier) {
-			this.actual = actual;
+			super(actual);
 			this.mapper = mapper;
 			this.delayError = delayError;
 			this.maxConcurrency = maxConcurrency;
@@ -253,31 +247,61 @@ final class FluxFlatMap<T, R> extends FluxSource<T, R> {
 			this.limit = maxConcurrency - (maxConcurrency >> 2);
 		}
 
+		@Override
+		public Stream<? extends Scannable> inners() {
+			return Stream.of(array).filter(Objects::nonNull);
+		}
+
+		@Override
+		public Object scan(Attr key) {
+			switch (key) {
+				case PARENT:
+					return s;
+				case CANCELLED:
+					return cancelled;
+				case ERROR:
+					return error;
+				case TERMINATED:
+					return done && (scalarQueue == null || scalarQueue.isEmpty());
+				case DELAY_ERROR:
+					return delayError;
+				case PREFETCH:
+					return maxConcurrency;
+				case REQUESTED_FROM_DOWNSTREAM:
+					return requested;
+				case LIMIT:
+					return limit;
+				case BUFFERED:
+					return (scalarQueue != null ? scalarQueue.size() : 0) + size;
+			}
+			return InnerOperator.super.scan(key);
+		}
+
 		@SuppressWarnings("unchecked")
 		@Override
-		protected FlatMapInner<R>[] empty() {
+		FlatMapInner<R>[] empty() {
 			return EMPTY;
 		}
 
 		@SuppressWarnings("unchecked")
 		@Override
-		protected FlatMapInner<R>[] terminated() {
+		FlatMapInner<R>[] terminated() {
 			return TERMINATED;
 		}
 
 		@SuppressWarnings("unchecked")
 		@Override
-		protected FlatMapInner<R>[] newArray(int size) {
+		FlatMapInner<R>[] newArray(int size) {
 			return new FlatMapInner[size];
 		}
 
 		@Override
-		protected void setIndex(FlatMapInner<R> entry, int index) {
+		void setIndex(FlatMapInner<R> entry, int index) {
 			entry.index = index;
 		}
 
 		@Override
-		protected void unsubscribeEntry(FlatMapInner<R> entry) {
+		void unsubscribeEntry(FlatMapInner<R> entry) {
 			entry.cancel();
 		}
 
@@ -820,65 +844,10 @@ final class FluxFlatMap<T, R> extends FluxSource<T, R> {
 			return q;
 		}
 
-		@Override
-		public long getCapacity() {
-			return maxConcurrency;
-		}
-
-		@Override
-		public long getPending() {
-			return done || scalarQueue == null ? -1L : scalarQueue.size();
-		}
-
-		@Override
-		public boolean isCancelled() {
-			return cancelled;
-		}
-
-		@Override
-		public boolean isStarted() {
-			return s != null && !isTerminated() && !isCancelled();
-		}
-
-		@Override
-		public boolean isTerminated() {
-			return done && (scalarQueue == null || scalarQueue.isEmpty());
-		}
-
-		@Override
-		public Throwable getError() {
-			return error;
-		}
-
-		@Override
-		public Object upstream() {
-			return s;
-		}
-
-		@Override
-		public Iterator<?> upstreams() {
-			return Arrays.asList(get())
-			             .iterator();
-		}
-
-		@Override
-		public long upstreamCount() {
-			return size;
-		}
-
-		@Override
-		public long requestedFromDownstream() {
-			return requested;
-		}
-
-		@Override
-		public Object downstream() {
-			return actual;
-		}
 	}
 
 	static final class FlatMapInner<R>
-			implements Subscriber<R>, Subscription, Producer, Receiver, Trackable {
+			implements InnerConsumer<R>, Subscription {
 
 		final FlatMapMain<?, R> parent;
 
@@ -906,10 +875,15 @@ final class FluxFlatMap<T, R> extends FluxSource<T, R> {
 
 		int index;
 
-		public FlatMapInner(FlatMapMain<?, R> parent, int prefetch) {
+		FlatMapInner(FlatMapMain<?, R> parent, int prefetch) {
 			this.parent = parent;
 			this.prefetch = prefetch;
 			this.limit = prefetch - (prefetch >> 2);
+		}
+
+		@Override
+		public Context currentContext() {
+			return parent.context;
 		}
 
 		@Override
@@ -977,79 +951,59 @@ final class FluxFlatMap<T, R> extends FluxSource<T, R> {
 		}
 
 		@Override
-		public long getCapacity() {
-			return prefetch;
-		}
-
-		@Override
-		public long getPending() {
-			return done || queue == null ? -1L : queue.size();
-		}
-
-		@Override
-		public boolean isCancelled() {
-			return s == Operators.cancelledSubscription();
-		}
-
-		@Override
-		public boolean isStarted() {
-			return s != null && !done && !isCancelled();
-		}
-
-		@Override
-		public boolean isTerminated() {
-			return done && (queue == null || queue.isEmpty());
-		}
-
-		@Override
-		public long expectedFromUpstream() {
-			return produced;
-		}
-
-		@Override
-		public long limit() {
-			return limit;
-		}
-
-		@Override
-		public Object upstream() {
-			return s;
-		}
-
-		@Override
-		public FluxFlatMap.FlatMapMain<?, R> downstream() {
-			return parent;
+		public Object scan(Attr key) {
+			switch (key) {
+				case PARENT:
+					return s;
+				case ACTUAL:
+					return parent;
+				case TERMINATED:
+					return done && (queue == null || queue.isEmpty());
+				case CANCELLED:
+					return s == Operators.cancelledSubscription();
+				case BUFFERED:
+					return queue == null ? 0 : queue.size();
+				case PREFETCH:
+					return prefetch;
+				case LIMIT:
+					return limit;
+			}
+			return null;
 		}
 	}
 }
 
-abstract class SpscFreeListTracker<T> {
+abstract class FlatMapTracker<T, O> extends CachedContextProducer<O> {
 
-	private volatile T[] array = empty();
+	volatile T[] array = empty();
 
-	private int[] free = FREE_EMPTY;
+	int[] free = FREE_EMPTY;
 
-	private long producerIndex;
-	private long consumerIndex;
+	long producerIndex;
+	long consumerIndex;
 
 	volatile int size;
 	@SuppressWarnings("rawtypes")
-	static final AtomicIntegerFieldUpdater<SpscFreeListTracker> SIZE =
-			AtomicIntegerFieldUpdater.newUpdater(SpscFreeListTracker.class, "size");
+	static final AtomicIntegerFieldUpdater<FlatMapTracker> SIZE =
+			AtomicIntegerFieldUpdater.newUpdater(FlatMapTracker.class, "size");
 
-	private static final int[] FREE_EMPTY = new int[0];
+	static final int[] FREE_EMPTY = new int[0];
 
-	protected abstract T[] empty();
+	FlatMapTracker(Subscriber<? super O> actual) {
+		super(actual);
+	}
 
-	protected abstract T[] terminated();
+	abstract T[] empty();
 
-	protected abstract T[] newArray(int size);
+	abstract T[] terminated();
 
-	protected abstract void unsubscribeEntry(T entry);
+	abstract T[] newArray(int size);
 
-	protected abstract void setIndex(T entry, int index);
+	abstract void unsubscribeEntry(T entry);
 
-	protected final void unsubscribe() {
+	abstract void setIndex(T entry, int index);
+
+	final void unsubscribe() {
 		T[] a;
 		T[] t = terminated();
 		synchronized (this) {
@@ -1068,11 +1022,11 @@ abstract class SpscFreeListTracker<T> {
 		}
 	}
 
-	public final T[] get() {
+	final T[] get() {
 		return array;
 	}
 
-	public final boolean add(T entry) {
+	final boolean add(T entry) {
 		T[] a = array;
 		if (a == terminated()) {
 			return false;
@@ -1111,7 +1065,7 @@ abstract class SpscFreeListTracker<T> {
 		return true;
 	}
 
-	public final void remove(int index) {
+	final void remove(int index) {
 		synchronized (this) {
 			T[] a = array;
 			if (a != terminated()) {
@@ -1122,7 +1076,7 @@ abstract class SpscFreeListTracker<T> {
 		}
 	}
 
-	private int pollFree() {
+	int pollFree() {
 		int[] a = free;
 		int m = a.length - 1;
 		long ci = consumerIndex;
@@ -1134,7 +1088,7 @@ abstract class SpscFreeListTracker<T> {
 		return a[offset];
 	}
 
-	private void offerFree(int index) {
+	void offerFree(int index) {
 		int[] a = free;
 		int m = a.length - 1;
 		long pi = producerIndex;
@@ -1143,7 +1097,7 @@ abstract class SpscFreeListTracker<T> {
 		producerIndex = pi + 1;
 	}
 
-	protected final boolean isEmpty() {
+	final boolean isEmpty() {
 		return size == 0;
 	}
 }

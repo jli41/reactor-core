@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,7 +15,8 @@
  */
 package reactor.core.publisher;
 
-import org.reactivestreams.*;
+import org.reactivestreams.Subscriber;
+import reactor.util.context.Context;
 
 /**
  * Wraps another Publisher/Mono and hides its identity, including its
@@ -27,14 +28,14 @@ import org.reactivestreams.*;
  * @param <T> the value type
  * 
  */
-final class MonoHide<T> extends MonoSource<T, T> {
+final class MonoHide<T> extends MonoOperator<T, T> {
 
-    public MonoHide(Publisher<? extends T> source) {
+    MonoHide(Mono<? extends T> source) {
         super(source);
     }
     
     @Override
-    public void subscribe(Subscriber<? super T> s) {
-        source.subscribe(new FluxHide.HideSubscriber<>(s));
+    public void subscribe(Subscriber<? super T> s, Context ctx) {
+        source.subscribe(new FluxHide.HideSubscriber<>(s), ctx);
     }
 }

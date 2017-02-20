@@ -15,17 +15,18 @@
  */
 package reactor.test.publisher;
 
-import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
 import reactor.core.Fuseable;
-import reactor.core.publisher.FluxSource;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.FluxOperator;
 import reactor.core.publisher.Operators;
+import reactor.util.context.Context;
 
 /**
  * @author Stephane Maldini
  */
-final class FluxFuseableExceptionOnPoll<T> extends FluxSource<T, T>
+final class FluxFuseableExceptionOnPoll<T> extends FluxOperator<T, T>
 		implements Fuseable {
 
 	@SuppressWarnings("unchecked")
@@ -46,15 +47,15 @@ final class FluxFuseableExceptionOnPoll<T> extends FluxSource<T, T>
 
 	final RuntimeException exception;
 
-	FluxFuseableExceptionOnPoll(Publisher<? extends T> source,
+	FluxFuseableExceptionOnPoll(Flux<? extends T> source,
 			RuntimeException exception) {
 		super(source);
 		this.exception = exception;
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super T> s) {
-		source.subscribe(new FuseableExceptionOnPollSubscriber<>(s, exception));
+	public void subscribe(Subscriber<? super T> s, Context ctx) {
+		source.subscribe(new FuseableExceptionOnPollSubscriber<>(s, exception), ctx);
 	}
 
 	static final class FuseableExceptionOnPollSubscriber<T>

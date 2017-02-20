@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@ import java.util.function.Function;
 
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
+import reactor.util.context.Context;
 
 /**
  * retries a source when a companion sequence signals an item in response to the main's
@@ -33,12 +34,12 @@ import org.reactivestreams.Subscriber;
  * @param <T> the source value type
  * @see <a href="https://github.com/reactor/reactive-streams-commons">Reactive-Streams-Commons</a>
  */
-final class MonoRetryWhen<T> extends MonoSource<T, T> {
+final class MonoRetryWhen<T> extends MonoOperator<T, T> {
 
 	final Function<? super Flux<Throwable>, ? extends Publisher<?>>
 			whenSourceFactory;
 
-	public MonoRetryWhen(Publisher<? extends T> source,
+	MonoRetryWhen(Mono<? extends T> source,
 			Function<? super Flux<Throwable>, ? extends Publisher<?>> whenSourceFactory) {
 		super(source);
 		this.whenSourceFactory =
@@ -46,7 +47,7 @@ final class MonoRetryWhen<T> extends MonoSource<T, T> {
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super T> s) {
-		FluxRetryWhen.subscribe(s, whenSourceFactory, source);
+	public void subscribe(Subscriber<? super T> s, Context ctx) {
+		FluxRetryWhen.subscribe(s, whenSourceFactory, source, ctx);
 	}
 }

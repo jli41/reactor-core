@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,33 +18,34 @@ package reactor.core.publisher;
 
 import java.util.concurrent.TimeUnit;
 
-import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
 import reactor.core.Fuseable;
 import reactor.core.scheduler.Scheduler;
+import reactor.util.context.Context;
 import reactor.util.function.Tuple2;
 import reactor.util.function.Tuples;
 
 /**
  * @author Stephane Maldini
  */
-final class FluxElapsed<T> extends FluxSource<T, Tuple2<Long, T>> implements Fuseable {
+final class FluxElapsed<T> extends FluxOperator<T, Tuple2<Long, T>> implements Fuseable {
 
 	final Scheduler scheduler;
 
-	FluxElapsed(Publisher<T> source, Scheduler scheduler) {
+	FluxElapsed(Flux<T> source, Scheduler scheduler) {
 		super(source);
 		this.scheduler = scheduler;
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super Tuple2<Long, T>> s) {
-		source.subscribe(new ElapsedSubscriber<T>(s, scheduler));
+	public void subscribe(Subscriber<? super Tuple2<Long, T>> s, Context ctx) {
+		source.subscribe(new ElapsedSubscriber<T>(s, scheduler), ctx);
 	}
 
 	static final class ElapsedSubscriber<T>
-			implements Subscriber<T>, QueueSubscription<Tuple2<Long, T>> {
+			implements InnerOperator<T, Tuple2<Long, T>>,
+			           QueueSubscription<Tuple2<Long, T>> {
 
 		final Subscriber<? super Tuple2<Long, T>> actual;
 		final Scheduler                           scheduler;
@@ -60,12 +61,26 @@ final class FluxElapsed<T> extends FluxSource<T, Tuple2<Long, T>> implements Fus
 		}
 
 		@Override
+		public Object scan(Attr key) {
+			switch (key) {
+				case PARENT:
+					return s;
+			}
+			return InnerOperator.super.scan(key);
+		}
+
+		@Override
 		public void onSubscribe(Subscription s) {
 			if (Operators.validate(this.s, s)) {
 				lastTime = scheduler.now(TimeUnit.MILLISECONDS);
 				this.s = s;
 				actual.onSubscribe(this);
 			}
+		}
+
+		@Override
+		public Subscriber<? super Tuple2<Long, T>> actual() {
+			return actual;
 		}
 
 		@Override

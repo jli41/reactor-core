@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,12 +23,16 @@ import java.util.concurrent.atomic.AtomicLongFieldUpdater;
 import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
 import java.util.function.Function;
 import java.util.function.Supplier;
+import java.util.stream.Stream;
 
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
 import reactor.core.Exceptions;
 import reactor.core.Fuseable;
+import reactor.core.Scannable;
+import reactor.util.context.Context;
+import reactor.util.context.ContextRelay;
 
 /**
  * Shares a sequence for the duration of a function that may transform it and
@@ -40,7 +44,7 @@ import reactor.core.Fuseable;
  *
  * @see <a href="https://github.com/reactor/reactive-streams-commons">Reactive-Streams-Commons</a>
  */
-final class FluxPublishMulticast<T, R> extends FluxSource<T, R> implements Fuseable {
+final class FluxPublishMulticast<T, R> extends FluxOperator<T, R> implements Fuseable {
 
 	final Function<? super Flux<T>, ? extends Publisher<? extends R>> transform;
 
@@ -48,7 +52,7 @@ final class FluxPublishMulticast<T, R> extends FluxSource<T, R> implements Fusea
 
 	final int prefetch;
 
-	FluxPublishMulticast(Publisher<? extends T> source,
+	FluxPublishMulticast(ContextualPublisher<? extends T> source,
 			Function<? super Flux<T>, ? extends Publisher<? extends R>> transform,
 			int prefetch,
 			Supplier<? extends Queue<T>> queueSupplier) {
@@ -67,10 +71,10 @@ final class FluxPublishMulticast<T, R> extends FluxSource<T, R> implements Fusea
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super R> s) {
+	public void subscribe(Subscriber<? super R> s, Context ctx) {
 
 		FluxPublishMulticaster<T, R> multicast =
-				new FluxPublishMulticaster<>(prefetch, queueSupplier);
+				new FluxPublishMulticaster<>(prefetch, queueSupplier, ctx);
 
 		Publisher<? extends R> out;
 
@@ -90,11 +94,11 @@ final class FluxPublishMulticast<T, R> extends FluxSource<T, R> implements Fusea
 			out.subscribe(new CancelMulticaster<>(s, multicast));
 		}
 
-		source.subscribe(multicast);
+		source.subscribe(multicast, ctx);
 	}
 
 	static final class FluxPublishMulticaster<T, R> extends Flux<T>
-			implements Subscriber<T> {
+			implements InnerConsumer<T> {
 
 		final int limit;
 
@@ -116,20 +120,20 @@ final class FluxPublishMulticast<T, R> extends FluxSource<T, R> implements Fusea
 		static final AtomicIntegerFieldUpdater<FluxPublishMulticaster> WIP =
 				AtomicIntegerFieldUpdater.newUpdater(FluxPublishMulticaster.class, "wip");
 
-		volatile PublishClientSubscription<T>[] subscribers;
+		volatile PublishMulticastInner<T>[] subscribers;
 		@SuppressWarnings("rawtypes")
-		static final AtomicReferenceFieldUpdater<FluxPublishMulticaster, PublishClientSubscription[]>
+		static final AtomicReferenceFieldUpdater<FluxPublishMulticaster, PublishMulticastInner[]>
 				SUBSCRIBERS = AtomicReferenceFieldUpdater.newUpdater(
 				FluxPublishMulticaster.class,
-				PublishClientSubscription[].class,
+				PublishMulticastInner[].class,
 				"subscribers");
 
 		@SuppressWarnings("rawtypes")
-		static final PublishClientSubscription[] EMPTY = new PublishClientSubscription[0];
+		static final PublishMulticastInner[] EMPTY = new PublishMulticastInner[0];
 
 		@SuppressWarnings("rawtypes")
-		static final PublishClientSubscription[] TERMINATED =
-				new PublishClientSubscription[0];
+		static final PublishMulticastInner[] TERMINATED =
+				new PublishMulticastInner[0];
 
 		volatile boolean done;
 
@@ -139,24 +143,60 @@ final class FluxPublishMulticast<T, R> extends FluxSource<T, R> implements Fusea
 
 		Throwable error;
 
+		final Context context;
+
 		int produced;
 
 		int sourceMode;
 
 		@SuppressWarnings("unchecked")
-		FluxPublishMulticaster(int prefetch, Supplier<? extends Queue<T>> queueSupplier) {
+		FluxPublishMulticaster(int prefetch, Supplier<? extends Queue<T>>
+				queueSupplier, Context ctx) {
 			this.prefetch = prefetch;
 			this.limit = prefetch - (prefetch >> 2);
 			this.queueSupplier = queueSupplier;
 			this.subscribers = EMPTY;
+			this.context = ctx;
 		}
 
 		@Override
-		public void subscribe(Subscriber<? super T> s) {
-			PublishClientSubscription<T> pcs = new PublishClientSubscription<>(this, s);
+		public Object scan(Attr key) {
+			switch (key) {
+				case PARENT:
+					return s;
+				case ERROR:
+					return error;
+				case CANCELLED:
+					return cancelled;
+				case TERMINATED:
+					return done;
+				case LIMIT:
+					return limit;
+				case PREFETCH:
+					return prefetch;
+				case BUFFERED:
+					return queue != null ? queue.size() : 0;
+			}
+			return null;
+		}
+
+		@Override
+		public Stream<? extends Scannable> inners() {
+			return Stream.of(subscribers);
+		}
+
+		@Override
+		public Context currentContext() {
+			return context;
+		}
+
+		@Override
+		public void subscribe(Subscriber<? super T> s, Context ctx) {
+			PublishMulticastInner<T> pcs = new PublishMulticastInner<>(this, s);
 			s.onSubscribe(pcs);
 
 			if (add(pcs)) {
+				ContextRelay.set(s, context);
 				if (pcs.once != 0) {
 					removeAndDrain(pcs);
 				}
@@ -277,7 +317,7 @@ final class FluxPublishMulticast<T, R> extends FluxSource<T, R> implements Fusea
 
 					final Queue<T> queue = this.queue;
 
-					PublishClientSubscription<T>[] a = subscribers;
+					PublishMulticastInner<T>[] a = subscribers;
 					int n = a.length;
 
 					if (n != 0) {
@@ -373,7 +413,7 @@ final class FluxPublishMulticast<T, R> extends FluxSource<T, R> implements Fusea
 
 					final Queue<T> queue = this.queue;
 
-					PublishClientSubscription<T>[] a = subscribers;
+					PublishMulticastInner<T>[] a = subscribers;
 					int n = a.length;
 
 					if (n != 0) {
@@ -498,9 +538,9 @@ final class FluxPublishMulticast<T, R> extends FluxSource<T, R> implements Fusea
 			}
 		}
 
-		boolean add(PublishClientSubscription<T> s) {
+		boolean add(PublishMulticastInner<T> s) {
 			for (; ; ) {
-				PublishClientSubscription<T>[] a = subscribers;
+				PublishMulticastInner<T>[] a = subscribers;
 
 				if (a == TERMINATED) {
 					return false;
@@ -508,8 +548,8 @@ final class FluxPublishMulticast<T, R> extends FluxSource<T, R> implements Fusea
 
 				int n = a.length;
 
-				@SuppressWarnings("unchecked") PublishClientSubscription<T>[] b =
-						new PublishClientSubscription[n + 1];
+				@SuppressWarnings("unchecked") PublishMulticastInner<T>[] b =
+						new PublishMulticastInner[n + 1];
 				System.arraycopy(a, 0, b, 0, n);
 				b[n] = s;
 				if (SUBSCRIBERS.compareAndSet(this, a, b)) {
@@ -519,9 +559,9 @@ final class FluxPublishMulticast<T, R> extends FluxSource<T, R> implements Fusea
 		}
 
 		@SuppressWarnings("unchecked")
-		void removeAndDrain(PublishClientSubscription<T> s) {
+		void removeAndDrain(PublishMulticastInner<T> s) {
 			for (; ; ) {
-				PublishClientSubscription<T>[] a = subscribers;
+				PublishMulticastInner<T>[] a = subscribers;
 
 				if (a == TERMINATED || a == EMPTY) {
 					return;
@@ -541,12 +581,12 @@ final class FluxPublishMulticast<T, R> extends FluxSource<T, R> implements Fusea
 					return;
 				}
 
-				PublishClientSubscription<T>[] b;
+				PublishMulticastInner<T>[] b;
 				if (n == 1) {
 					b = EMPTY;
 				}
 				else {
-					b = new PublishClientSubscription[n - 1];
+					b = new PublishMulticastInner[n - 1];
 					System.arraycopy(a, 0, b, 0, j);
 					System.arraycopy(a, j + 1, b, j, n - j - 1);
 				}
@@ -579,7 +619,7 @@ final class FluxPublishMulticast<T, R> extends FluxSource<T, R> implements Fusea
 		}
 	}
 
-	static final class PublishClientSubscription<T> implements Subscription {
+	static final class PublishMulticastInner<T> implements InnerProducer<T> {
 
 		final FluxPublishMulticaster<T, ?> parent;
 
@@ -587,20 +627,38 @@ final class FluxPublishMulticast<T, R> extends FluxSource<T, R> implements Fusea
 
 		volatile long requested;
 		@SuppressWarnings("rawtypes")
-		static final AtomicLongFieldUpdater<PublishClientSubscription> REQUESTED =
-				AtomicLongFieldUpdater.newUpdater(PublishClientSubscription.class,
+		static final AtomicLongFieldUpdater<PublishMulticastInner> REQUESTED =
+				AtomicLongFieldUpdater.newUpdater(PublishMulticastInner.class,
 						"requested");
 
 		volatile int once;
 		@SuppressWarnings("rawtypes")
-		static final AtomicIntegerFieldUpdater<PublishClientSubscription> ONCE =
-				AtomicIntegerFieldUpdater.newUpdater(PublishClientSubscription.class,
+		static final AtomicIntegerFieldUpdater<PublishMulticastInner> ONCE =
+				AtomicIntegerFieldUpdater.newUpdater(PublishMulticastInner.class,
 						"once");
 
-		public PublishClientSubscription(FluxPublishMulticaster<T, ?> parent,
+		PublishMulticastInner(FluxPublishMulticaster<T, ?> parent,
 				Subscriber<? super T> actual) {
 			this.parent = parent;
 			this.actual = actual;
+		}
+
+		@Override
+		public Object scan(Attr key) {
+			switch (key) {
+				case REQUESTED_FROM_DOWNSTREAM:
+					return requested;
+				case PARENT:
+					return parent;
+				case CANCELLED:
+					return once == 1;
+			}
+			return InnerProducer.super.scan(key);
+		}
+
+		@Override
+		public Subscriber<? super T> actual() {
+			return actual;
 		}
 
 		@Override
@@ -626,7 +684,7 @@ final class FluxPublishMulticast<T, R> extends FluxSource<T, R> implements Fusea
 	}
 
 	static final class CancelMulticaster<T>
-			implements Subscriber<T>, QueueSubscription<T> {
+			implements InnerOperator<T, T>, QueueSubscription<T> {
 
 		final Subscriber<? super T> actual;
 
@@ -634,10 +692,24 @@ final class FluxPublishMulticast<T, R> extends FluxSource<T, R> implements Fusea
 
 		Subscription s;
 
-		public CancelMulticaster(Subscriber<? super T> actual,
+		CancelMulticaster(Subscriber<? super T> actual,
 				FluxPublishMulticaster<?, ?> parent) {
 			this.actual = actual;
 			this.parent = parent;
+		}
+
+		@Override
+		public Subscriber<? super T> actual() {
+			return actual;
+		}
+
+		@Override
+		public Object scan(Attr key) {
+			switch (key){
+				case PARENT:
+					return s;
+			}
+			return InnerOperator.super.scan(key);
 		}
 
 		@Override
@@ -710,7 +782,7 @@ final class FluxPublishMulticast<T, R> extends FluxSource<T, R> implements Fusea
 	}
 
 	static final class CancelFuseableMulticaster<T>
-			implements Subscriber<T>, QueueSubscription<T> {
+			implements InnerOperator<T, T>, QueueSubscription<T> {
 
 		final Subscriber<? super T> actual;
 
@@ -718,10 +790,24 @@ final class FluxPublishMulticast<T, R> extends FluxSource<T, R> implements Fusea
 
 		QueueSubscription<T> s;
 
-		public CancelFuseableMulticaster(Subscriber<? super T> actual,
+		CancelFuseableMulticaster(Subscriber<? super T> actual,
 				FluxPublishMulticaster<?, ?> parent) {
 			this.actual = actual;
 			this.parent = parent;
+		}
+
+		@Override
+		public Subscriber<? super T> actual() {
+			return actual;
+		}
+
+		@Override
+		public Object scan(Attr key) {
+			switch (key){
+				case PARENT:
+					return s;
+			}
+			return InnerOperator.super.scan(key);
 		}
 
 		@Override

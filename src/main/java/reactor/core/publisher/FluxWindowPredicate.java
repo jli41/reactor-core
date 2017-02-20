@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *        http://www.apache.org/licenses/LICENSE-2.0
+ *       http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,8 +16,6 @@
 
 package reactor.core.publisher;
 
-import java.util.Collections;
-import java.util.Iterator;
 import java.util.Objects;
 import java.util.Queue;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
@@ -25,17 +23,16 @@ import java.util.concurrent.atomic.AtomicLongFieldUpdater;
 import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
+import java.util.stream.Stream;
 
-import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
 import reactor.core.Exceptions;
 import reactor.core.Fuseable;
-import reactor.core.MultiProducer;
-import reactor.core.Producer;
-import reactor.core.Receiver;
-import reactor.core.Trackable;
+import reactor.core.Scannable;
 import reactor.core.publisher.FluxBufferPredicate.Mode;
+import reactor.util.context.Context;
+import reactor.util.context.ContextRelay;
 
 /**
  * Cut a sequence into non-overlapping windows where each window boundary is determined by
@@ -54,7 +51,8 @@ import reactor.core.publisher.FluxBufferPredicate.Mode;
  *
  * @see <a href="https://github.com/reactor/reactive-streams-commons">Reactive-Streams-Commons</a>
  */
-final class FluxWindowPredicate<T> extends FluxSource<T, GroupedFlux<T, T>> implements Fuseable{
+final class FluxWindowPredicate<T> extends FluxOperator<T, GroupedFlux<T, T>>
+		implements Fuseable{
 
 	final Supplier<? extends Queue<T>> groupQueueSupplier;
 
@@ -66,7 +64,7 @@ final class FluxWindowPredicate<T> extends FluxSource<T, GroupedFlux<T, T>> impl
 
 	final int prefetch;
 
-	FluxWindowPredicate(Publisher<? extends T> source,
+	FluxWindowPredicate(Flux<? extends T> source,
 			Supplier<? extends Queue<GroupedFlux<T, T>>> mainQueueSupplier,
 			Supplier<? extends Queue<T>> groupQueueSupplier,
 			int prefetch,
@@ -86,13 +84,13 @@ final class FluxWindowPredicate<T> extends FluxSource<T, GroupedFlux<T, T>> impl
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super GroupedFlux<T, T>> s) {
+	public void subscribe(Subscriber<? super GroupedFlux<T, T>> s, Context ctx) {
 		source.subscribe(new WindowPredicateMain<>(s,
 				mainQueueSupplier.get(),
 				groupQueueSupplier,
 				prefetch,
 				predicate,
-				mode));
+				mode, ctx), ctx);
 	}
 
 	@Override
@@ -101,8 +99,8 @@ final class FluxWindowPredicate<T> extends FluxSource<T, GroupedFlux<T, T>> impl
 	}
 
 	static final class WindowPredicateMain<T>
-			implements Subscriber<T>, Fuseable.QueueSubscription<GroupedFlux<T, T>>,
-			           MultiProducer, Producer, Trackable, Receiver {
+			implements Fuseable.QueueSubscription<GroupedFlux<T, T>>,
+			           InnerOperator<T, GroupedFlux<T, T>> {
 
 		final Subscriber<? super GroupedFlux<T, T>> actual;
 
@@ -117,6 +115,8 @@ final class FluxWindowPredicate<T> extends FluxSource<T, GroupedFlux<T, T>> impl
 		final Queue<GroupedFlux<T, T>> queue;
 
 		WindowGroupedFlux<T> window;
+
+		Context context;
 
 		volatile int wip;
 		@SuppressWarnings("rawtypes")
@@ -151,13 +151,15 @@ final class FluxWindowPredicate<T> extends FluxSource<T, GroupedFlux<T, T>> impl
 				Supplier<? extends Queue<T>> groupQueueSupplier,
 				int prefetch,
 				Predicate<? super T> predicate,
-				Mode mode) {
+				Mode mode,
+				Context ctx) {
 			this.actual = actual;
 			this.queue = queue;
 			this.groupQueueSupplier = groupQueueSupplier;
 			this.prefetch = prefetch;
 			this.predicate = predicate;
 			this.mode = mode;
+			this.context = ctx;
 			initializeWindow();
 		}
 
@@ -180,7 +182,8 @@ final class FluxWindowPredicate<T> extends FluxSource<T, GroupedFlux<T, T>> impl
 		void initializeWindow() {
 			WindowGroupedFlux<T> g = new WindowGroupedFlux<>(null,
 					groupQueueSupplier.get(),
-					this);
+					this,
+					context);
 			window = g;
 			queue.offer(g);
 		}
@@ -188,7 +191,7 @@ final class FluxWindowPredicate<T> extends FluxSource<T, GroupedFlux<T, T>> impl
 		void offerNewWindow(T key, T emitInNewWindow) {
 			// if the main is cancelled, don't create new groups
 			if (cancelled == 0) {
-				WindowGroupedFlux<T> g = new WindowGroupedFlux<>(key, groupQueueSupplier.get(), this);
+				WindowGroupedFlux<T> g = new WindowGroupedFlux<>(key, groupQueueSupplier.get(), this, context);
 				if (emitInNewWindow != null) {
 					g.onNext(emitInNewWindow);
 				}
@@ -266,64 +269,34 @@ final class FluxWindowPredicate<T> extends FluxSource<T, GroupedFlux<T, T>> impl
 		}
 
 		@Override
-		public long getCapacity() {
-			return prefetch;
-		}
-
-		@Override
-		public long getPending() {
-			return queue.size();
-		}
-
-		@Override
-		public boolean isStarted() {
-			return s != null && cancelled != 1 && !done;
-		}
-
-		@Override
-		public boolean isCancelled() {
-			return cancelled == 1;
-		}
-
-		@Override
-		public boolean isTerminated() {
-			return done;
-		}
-
-		@Override
-		public Throwable getError() {
-			return error;
-		}
-
-		@Override
-		public Iterator<?> downstreams() {
-			WindowGroupedFlux<T> g = window;
-			if (g == null) {
-				return Collections.emptyList()
-				                  .iterator();
+		public Object scan(Attr key) {
+			switch (key) {
+				case PARENT:
+					return s;
+				case CANCELLED:
+					return cancelled == 1;
+				case PREFETCH:
+					return prefetch;
+				case TERMINATED:
+					return done;
+				case BUFFERED:
+					return queue.size();
+				case ERROR:
+					return error;
+				case REQUESTED_FROM_DOWNSTREAM:
+					return requested;
 			}
-			return Collections.singletonList(g)
-			                  .iterator();
+			return InnerOperator.super.scan(key);
 		}
 
 		@Override
-		public long downstreamCount() {
-			return window == null ? 0L : 1L;
+		public Stream<? extends Scannable> inners() {
+			return Stream.of(window);
 		}
 
 		@Override
-		public Object downstream() {
+		public Subscriber<? super GroupedFlux<T, T>> actual() {
 			return actual;
-		}
-
-		@Override
-		public Object upstream() {
-			return s;
-		}
-
-		@Override
-		public long requestedFromDownstream() {
-			return requested;
 		}
 
 		void signalAsyncError() {
@@ -511,8 +484,7 @@ final class FluxWindowPredicate<T> extends FluxSource<T, GroupedFlux<T, T>> impl
 	}
 
 	static final class WindowGroupedFlux<T> extends GroupedFlux<T, T>
-			implements Fuseable, Fuseable.QueueSubscription<T>, Producer, Receiver,
-			           Trackable {
+			implements Fuseable, Fuseable.QueueSubscription<T>, InnerOperator<T, T> {
 
 		final T key;
 
@@ -522,6 +494,8 @@ final class FluxWindowPredicate<T> extends FluxSource<T, GroupedFlux<T, T>> impl
 		}
 
 		final Queue<T> queue;
+
+		final Context context;
 
 		volatile WindowPredicateMain<T> parent;
 		@SuppressWarnings("rawtypes")
@@ -561,12 +535,19 @@ final class FluxWindowPredicate<T> extends FluxSource<T, GroupedFlux<T, T>> impl
 
 		int produced;
 
-		public WindowGroupedFlux(T key,
+		WindowGroupedFlux(T key,
 				Queue<T> queue,
-				WindowPredicateMain<T> parent) {
+				WindowPredicateMain<T> parent,
+				Context ctx) {
 			this.key = key;
+			this.context = ctx;
 			this.queue = queue;
 			this.parent = parent;
+		}
+
+		@Override
+		public Subscriber<? super T> actual() {
+			return actual;
 		}
 
 		void propagateTerminate() {
@@ -726,6 +707,12 @@ final class FluxWindowPredicate<T> extends FluxSource<T, GroupedFlux<T, T>> impl
 			}
 		}
 
+		@Override
+		public void onSubscribe(Subscription s) {
+			//IGNORE
+		}
+
+		@Override
 		public void onError(Throwable t) {
 			error = t;
 			done = true;
@@ -735,6 +722,7 @@ final class FluxWindowPredicate<T> extends FluxSource<T, GroupedFlux<T, T>> impl
 			drain();
 		}
 
+		@Override
 		public void onComplete() {
 			done = true;
 			propagateTerminate();
@@ -743,9 +731,9 @@ final class FluxWindowPredicate<T> extends FluxSource<T, GroupedFlux<T, T>> impl
 		}
 
 		@Override
-		public void subscribe(Subscriber<? super T> s) {
+		public void subscribe(Subscriber<? super T> s, Context ctx) {
 			if (once == 0 && ONCE.compareAndSet(this, 0, 1)) {
-
+				ContextRelay.set(s, context);
 				s.onSubscribe(this);
 				ACTUAL.lazySet(this, s);
 				drain();
@@ -824,54 +812,22 @@ final class FluxWindowPredicate<T> extends FluxSource<T, GroupedFlux<T, T>> impl
 		}
 
 		@Override
-		public boolean isCancelled() {
-			return cancelled;
-		}
-
-		@Override
-		public boolean isStarted() {
-			return once == 1 && !done && !cancelled;
-		}
-
-		@Override
-		public boolean isTerminated() {
-			return done;
-		}
-
-		@Override
-		public Throwable getError() {
-			return error;
-		}
-
-		@Override
-		public Object downstream() {
-			return actual;
-		}
-
-		@Override
-		public Object upstream() {
-			return parent;
-		}
-
-		@Override
-		public long getCapacity() {
-			WindowPredicateMain<T> parent = this.parent;
-			return parent != null ? parent.prefetch : -1L;
-		}
-
-		@Override
-		public long getPending() {
-			return queue == null || done ? -1L : queue.size();
-		}
-
-		@Override
-		public long requestedFromDownstream() {
-			return requested;
-		}
-
-		@Override
-		public long expectedFromUpstream() {
-			return produced;
+		public Object scan(Attr key) {
+			switch (key) {
+				case PARENT:
+					return parent;
+				case CANCELLED:
+					return cancelled;
+				case TERMINATED:
+					return done;
+				case BUFFERED:
+					return queue.size();
+				case ERROR:
+					return error;
+				case REQUESTED_FROM_DOWNSTREAM:
+					return requested;
+			}
+			return InnerOperator.super.scan(key);
 		}
 
 		@Override

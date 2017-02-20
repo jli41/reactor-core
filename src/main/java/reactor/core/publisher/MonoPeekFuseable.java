@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,10 +19,10 @@ package reactor.core.publisher;
 import java.util.function.Consumer;
 import java.util.function.LongConsumer;
 
-import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
 import reactor.core.Fuseable;
+import reactor.util.context.Context;
 
 /**
  * Peeks out values that make a filter function return false.
@@ -31,7 +31,7 @@ import reactor.core.Fuseable;
  * @see <a href="https://github.com/reactor/reactive-streams-commons">Reactive-Streams-Commons</a>
  *
  */
-final class MonoPeekFuseable<T> extends MonoSource<T, T>
+final class MonoPeekFuseable<T> extends MonoOperator<T, T>
 		implements Fuseable, SignalPeek<T> {
 
 	final Consumer<? super Subscription> onSubscribeCall;
@@ -48,7 +48,7 @@ final class MonoPeekFuseable<T> extends MonoSource<T, T>
 
 	final Runnable onCancelCall;
 
-	public MonoPeekFuseable(Publisher<? extends T> source,
+	MonoPeekFuseable(Mono<? extends T> source,
 			Consumer<? super Subscription> onSubscribeCall,
 			Consumer<? super T> onNextCall,
 			Consumer<? super Throwable> onErrorCall,
@@ -69,13 +69,13 @@ final class MonoPeekFuseable<T> extends MonoSource<T, T>
 
 	@Override
 	@SuppressWarnings("unchecked")
-	public void subscribe(Subscriber<? super T> s) {
+	public void subscribe(Subscriber<? super T> s, Context ctx) {
 		if (s instanceof ConditionalSubscriber) {
 			source.subscribe(new FluxPeekFuseable.PeekFuseableConditionalSubscriber<>((ConditionalSubscriber<?
-					super T>) s, this));
+					super T>) s, this), ctx);
 			return;
 		}
-		source.subscribe(new FluxPeekFuseable.PeekFuseableSubscriber<>(s, this));
+		source.subscribe(new FluxPeekFuseable.PeekFuseableSubscriber<>(s, this), ctx);
 	}
 
 	@Override

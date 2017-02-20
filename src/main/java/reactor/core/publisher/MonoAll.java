@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,11 +18,10 @@ package reactor.core.publisher;
 import java.util.Objects;
 import java.util.function.Predicate;
 
-import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
 import reactor.core.Fuseable;
-import reactor.core.Receiver;
+import reactor.util.context.Context;
 
 /**
  * Emits a single boolean true if all values of the source sequence match
@@ -34,31 +33,41 @@ import reactor.core.Receiver;
  * @param <T> the source value type
  * @see <a href="https://github.com/reactor/reactive-streams-commons">Reactive-Streams-Commons</a>
  */
-final class MonoAll<T> extends MonoSource<T, Boolean> implements Fuseable {
+final class MonoAll<T> extends MonoOperator<T, Boolean> implements Fuseable {
 
 	final Predicate<? super T> predicate;
 
-	public MonoAll(Publisher<? extends T> source, Predicate<? super T> predicate) {
+	MonoAll(Flux<? extends T> source, Predicate<? super T> predicate) {
 		super(source);
 		this.predicate = Objects.requireNonNull(predicate, "predicate");
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super Boolean> s) {
-		source.subscribe(new AllSubscriber<T>(s, predicate));
+	public void subscribe(Subscriber<? super Boolean> s, Context ctx) {
+		source.subscribe(new AllSubscriber<T>(s, predicate), ctx);
 	}
 
-	static final class AllSubscriber<T> extends Operators.MonoSubscriber<T, Boolean>
-			implements Receiver {
+	static final class AllSubscriber<T> extends Operators.MonoSubscriber<T, Boolean> {
 		final Predicate<? super T> predicate;
 
 		Subscription s;
 
 		boolean done;
 
-		public AllSubscriber(Subscriber<? super Boolean> actual, Predicate<? super T> predicate) {
+		AllSubscriber(Subscriber<? super Boolean> actual, Predicate<? super T> predicate) {
 			super(actual);
 			this.predicate = predicate;
+		}
+
+		@Override
+		public Object scan(Attr key) {
+			switch (key){
+				case TERMINATED:
+					return done;
+				case PARENT:
+					return s;
+			}
+			return super.scan(key);
 		}
 
 		@Override
@@ -119,11 +128,6 @@ final class MonoAll<T> extends MonoSource<T, Boolean> implements Fuseable {
 			}
 			done = true;
 			complete(true);
-		}
-
-		@Override
-		public Object upstream() {
-			return s;
 		}
 
 		@Override

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,10 +16,10 @@
 
 package reactor.core.publisher;
 
-import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import reactor.core.Fuseable;
 import reactor.core.publisher.FluxOnAssembly.AssemblySnapshotException;
+import reactor.util.context.Context;
 
 /**
  * Captures the current stacktrace when this publisher is created and makes it
@@ -34,14 +34,14 @@ import reactor.core.publisher.FluxOnAssembly.AssemblySnapshotException;
  * @param <T> the value type passing through
  * @see <a href="https://github.com/reactor/reactive-streams-commons">https://github.com/reactor/reactive-streams-commons</a>
  */
-final class MonoOnAssembly<T> extends MonoSource<T, T> implements Fuseable, AssemblyOp {
+final class MonoOnAssembly<T> extends MonoOperator<T, T> implements Fuseable, AssemblyOp {
 
 	final AssemblySnapshotException stacktrace;
 
 	/**
 	 * Create an assembly trace exposed as a {@link Mono}.
 	 */
-	MonoOnAssembly(Publisher<? extends T> source) {
+	MonoOnAssembly(Mono<? extends T> source) {
 		super(source);
 		this.stacktrace = new AssemblySnapshotException();
 	}
@@ -50,13 +50,13 @@ final class MonoOnAssembly<T> extends MonoSource<T, T> implements Fuseable, Asse
 	 * Create an assembly trace augmented with a custom description (eg. a name for a Mono
 	 * or a wider correlation ID) and exposed as a {@link Mono}.
 	 */
-	MonoOnAssembly(Publisher<? extends T> source, String description) {
+	MonoOnAssembly(Mono<? extends T> source, String description) {
 		super(source);
 		this.stacktrace = new AssemblySnapshotException(description);
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super T> s) {
-		FluxOnAssembly.subscribe(s, source, stacktrace);
+	public void subscribe(Subscriber<? super T> s, Context ctx) {
+		FluxOnAssembly.subscribe(s, source, stacktrace, ctx);
 	}
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,13 +19,12 @@ package reactor.core.publisher;
 import java.util.function.Consumer;
 import java.util.function.LongConsumer;
 
-import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
 import reactor.core.Exceptions;
 import reactor.core.Fuseable;
-import reactor.core.Producer;
-import reactor.core.Receiver;
+import reactor.util.context.Context;
+import reactor.util.context.ContextRelay;
 
 /**
  * Peek into the lifecycle events and signals of a sequence.
@@ -40,7 +39,7 @@ import reactor.core.Receiver;
  *
  * @see <a href="https://github.com/reactor/reactive-streams-commons">Reactive-Streams-Commons</a>
  */
-final class FluxPeekFuseable<T> extends FluxSource<T, T>
+final class FluxPeekFuseable<T> extends FluxOperator<T, T>
 		implements Fuseable, SignalPeek<T> {
 
 	final Consumer<? super Subscription> onSubscribeCall;
@@ -57,7 +56,7 @@ final class FluxPeekFuseable<T> extends FluxSource<T, T>
 
 	final Runnable onCancelCall;
 
-	FluxPeekFuseable(Publisher<? extends T> source,
+	FluxPeekFuseable(Flux<? extends T> source,
 			Consumer<? super Subscription> onSubscribeCall,
 			Consumer<? super T> onNextCall,
 			Consumer<? super Throwable> onErrorCall,
@@ -78,17 +77,17 @@ final class FluxPeekFuseable<T> extends FluxSource<T, T>
 
 	@Override
 	@SuppressWarnings("unchecked")
-	public void subscribe(Subscriber<? super T> s) {
+	public void subscribe(Subscriber<? super T> s, Context ctx) {
 		if (s instanceof ConditionalSubscriber) {
 			source.subscribe(new PeekFuseableConditionalSubscriber<>((ConditionalSubscriber<? super T>) s,
-					this));
+					this), ctx);
 			return;
 		}
-		source.subscribe(new PeekFuseableSubscriber<>(s, this));
+		source.subscribe(new PeekFuseableSubscriber<>(s, this), ctx);
 	}
 
 	static final class PeekFuseableSubscriber<T>
-			implements Subscriber<T>, Receiver, Producer, SynchronousSubscription<T> {
+			implements InnerOperator<T, T>, QueueSubscription<T> {
 
 		final Subscriber<? super T> actual;
 
@@ -100,10 +99,38 @@ final class FluxPeekFuseable<T> extends FluxSource<T, T>
 
 		volatile boolean done;
 
-		public PeekFuseableSubscriber(Subscriber<? super T> actual,
+		@Override
+		public Object scan(Attr key) {
+			switch (key) {
+				case PARENT:
+					return s;
+				case TERMINATED:
+					return done;
+			}
+			return InnerOperator.super.scan(key);
+		}
+
+		PeekFuseableSubscriber(Subscriber<? super T> actual,
 				SignalPeek<T> parent) {
 			this.actual = actual;
 			this.parent = parent;
+		}
+
+		@Override
+		public void onContext(Context context) {
+			if(parent.onContextPropagateCall() != null) {
+				parent.onContextPropagateCall().accept(context);
+			}
+			InnerOperator.super.onContext(context);
+		}
+
+		@Override
+		public Context currentContext() {
+			Context c = ContextRelay.getOrEmpty(actual);
+			if(!c.isEmpty() && parent.onContextParentCall() != null) {
+				parent.onContextParentCall().accept(c);
+			}
+			return c;
 		}
 
 		@Override
@@ -256,13 +283,8 @@ final class FluxPeekFuseable<T> extends FluxSource<T, T>
 		}
 
 		@Override
-		public Object downstream() {
+		public Subscriber<? super T> actual() {
 			return actual;
-		}
-
-		@Override
-		public Object upstream() {
-			return s;
 		}
 
 		@Override
@@ -321,8 +343,8 @@ final class FluxPeekFuseable<T> extends FluxSource<T, T>
 	}
 
 	static final class PeekFuseableConditionalSubscriber<T>
-			implements ConditionalSubscriber<T>, Receiver, Producer,
-			           SynchronousSubscription<T> {
+			implements ConditionalSubscriber<T>, InnerOperator<T, T>,
+			           QueueSubscription<T> {
 
 		final ConditionalSubscriber<? super T> actual;
 
@@ -334,10 +356,38 @@ final class FluxPeekFuseable<T> extends FluxSource<T, T>
 
 		volatile boolean done;
 
-		public PeekFuseableConditionalSubscriber(ConditionalSubscriber<? super T> actual,
+		PeekFuseableConditionalSubscriber(ConditionalSubscriber<? super T> actual,
 				SignalPeek<T> parent) {
 			this.actual = actual;
 			this.parent = parent;
+		}
+
+		@Override
+		public void onContext(Context context) {
+			if(parent.onContextPropagateCall() != null) {
+				parent.onContextPropagateCall().accept(context);
+			}
+			InnerOperator.super.onContext(context);
+		}
+
+		@Override
+		public Context currentContext() {
+			Context c = ContextRelay.getOrEmpty(actual);
+			if(!c.isEmpty() && parent.onContextParentCall() != null) {
+				parent.onContextParentCall().accept(c);
+			}
+			return c;
+		}
+
+		@Override
+		public Object scan(Attr key) {
+			switch (key) {
+				case PARENT:
+					return s;
+				case TERMINATED:
+					return done;
+			}
+			return InnerOperator.super.scan(key);
 		}
 
 		@Override
@@ -508,13 +558,8 @@ final class FluxPeekFuseable<T> extends FluxSource<T, T>
 		}
 
 		@Override
-		public Object downstream() {
+		public Subscriber<? super T> actual() {
 			return actual;
-		}
-
-		@Override
-		public Object upstream() {
-			return s;
 		}
 
 		@Override
@@ -608,7 +653,7 @@ final class FluxPeekFuseable<T> extends FluxSource<T, T>
 	}
 
 	static final class PeekConditionalSubscriber<T>
-			implements ConditionalSubscriber<T>, Subscription, Receiver, Producer {
+			implements ConditionalSubscriber<T>, InnerOperator<T, T> {
 
 		final ConditionalSubscriber<? super T> actual;
 
@@ -618,10 +663,27 @@ final class FluxPeekFuseable<T> extends FluxSource<T, T>
 
 		boolean done;
 
-		public PeekConditionalSubscriber(ConditionalSubscriber<? super T> actual,
+		PeekConditionalSubscriber(ConditionalSubscriber<? super T> actual,
 				SignalPeek<T> parent) {
 			this.actual = actual;
 			this.parent = parent;
+		}
+
+		@Override
+		public void onContext(Context context) {
+			if(parent.onContextPropagateCall() != null) {
+				parent.onContextPropagateCall().accept(context);
+			}
+			InnerOperator.super.onContext(context);
+		}
+
+		@Override
+		public Context currentContext() {
+			Context c = ContextRelay.getOrEmpty(actual);
+			if(!c.isEmpty() && parent.onContextParentCall() != null) {
+				parent.onContextParentCall().accept(c);
+			}
+			return c;
 		}
 
 		@Override
@@ -670,6 +732,17 @@ final class FluxPeekFuseable<T> extends FluxSource<T, T>
 				this.s = s;
 				actual.onSubscribe(this);
 			}
+		}
+
+		@Override
+		public Object scan(Attr key) {
+			switch (key) {
+				case PARENT:
+					return s;
+				case TERMINATED:
+					return done;
+			}
+			return InnerOperator.super.scan(key);
 		}
 
 		@Override
@@ -781,13 +854,9 @@ final class FluxPeekFuseable<T> extends FluxSource<T, T>
 		}
 
 		@Override
-		public Object downstream() {
+		public Subscriber<? super T> actual() {
 			return actual;
 		}
 
-		@Override
-		public Object upstream() {
-			return s;
-		}
 	}
 }

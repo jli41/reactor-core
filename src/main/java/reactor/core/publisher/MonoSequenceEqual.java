@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,13 +20,15 @@ import java.util.Queue;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
 import java.util.function.BiPredicate;
+import java.util.stream.Stream;
 
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
 import reactor.core.Exceptions;
-import reactor.core.Producer;
+import reactor.core.Scannable;
 import reactor.util.concurrent.QueueSupplier;
+import reactor.util.context.Context;
 
 import static reactor.core.publisher.Operators.cancelledSubscription;
 
@@ -36,7 +38,7 @@ final class MonoSequenceEqual<T> extends Mono<Boolean> {
 	final BiPredicate<? super T, ? super T> comparer;
 	final int                               bufferSize;
 
-	public MonoSequenceEqual(Publisher<? extends T> first, Publisher<? extends T> second,
+	MonoSequenceEqual(Publisher<? extends T> first, Publisher<? extends T> second,
 			BiPredicate<? super T, ? super T> comparer, int bufferSize) {
 		this.first = Objects.requireNonNull(first, "first");
 		this.second = Objects.requireNonNull(second, "second");
@@ -49,19 +51,20 @@ final class MonoSequenceEqual<T> extends Mono<Boolean> {
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super Boolean> s) {
-		EqualCoordinator<T> ec = new EqualCoordinator<>(s, bufferSize, first, second, comparer);
+	public void subscribe(Subscriber<? super Boolean> s, Context ctx) {
+		EqualCoordinator<T> ec = new EqualCoordinator<>(s, bufferSize, first, second, comparer, ctx);
 		s.onSubscribe(ec);
 		ec.subscribe();
 	}
 
-	static final class EqualCoordinator<T> implements Subscription {
+	static final class EqualCoordinator<T> implements InnerProducer<Boolean> {
 		final Subscriber<? super Boolean> actual;
 		final BiPredicate<? super T, ? super T> comparer;
 		final Publisher<? extends T> first;
 		final Publisher<? extends T> second;
 		final EqualSubscriber<T> firstSubscriber;
 		final EqualSubscriber<T> secondSubscriber;
+		final Context context;
 
 		volatile boolean cancelled;
 
@@ -81,13 +84,34 @@ final class MonoSequenceEqual<T> extends Mono<Boolean> {
 
 		EqualCoordinator(Subscriber<? super Boolean> actual, int bufferSize,
 				Publisher<? extends T> first, Publisher<? extends T> second,
-				BiPredicate<? super T, ? super T> comparer) {
+				BiPredicate<? super T, ? super T> comparer,
+				Context context) {
 			this.actual = actual;
+			this.context = context;
 			this.first = first;
 			this.second = second;
 			this.comparer = comparer;
 			firstSubscriber = new EqualSubscriber<>(this, bufferSize);
 			secondSubscriber = new EqualSubscriber<>(this, bufferSize);
+		}
+
+		@Override
+		public Subscriber<? super Boolean> actual() {
+			return actual;
+		}
+
+		@Override
+		public Object scan(Attr key) {
+			switch (key){
+				case CANCELLED:
+					return cancelled;
+			}
+			return InnerProducer.super.scan(key);
+		}
+
+		@Override
+		public Stream<? extends Scannable> inners() {
+			return Stream.of(firstSubscriber, secondSubscriber);
 		}
 
 		void subscribe() {
@@ -256,7 +280,7 @@ final class MonoSequenceEqual<T> extends Mono<Boolean> {
 	}
 
 	static final class EqualSubscriber<T>
-			implements Subscriber<T>, Producer {
+			implements InnerConsumer<T> {
 		final EqualCoordinator<T> parent;
 		final Queue<T>            queue;
 		final int                 bufferSize;
@@ -277,8 +301,29 @@ final class MonoSequenceEqual<T> extends Mono<Boolean> {
 		}
 
 		@Override
-		public Object downstream() {
-			return parent;
+		public Context currentContext() {
+			return parent.context;
+		}
+
+		@Override
+		public Object scan(Attr key) {
+			switch (key){
+				case TERMINATED:
+					return done;
+				case ACTUAL:
+					return parent;
+				case ERROR:
+					return error;
+				case CANCELLED:
+					return subscription == Operators.cancelledSubscription();
+				case PARENT:
+					return subscription;
+				case PREFETCH:
+					return bufferSize;
+				case BUFFERED:
+					return queue.size();
+			}
+			return null;
 		}
 
 		@Override

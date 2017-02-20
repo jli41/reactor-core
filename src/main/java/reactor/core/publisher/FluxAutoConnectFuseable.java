@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,10 +19,12 @@ import java.util.Objects;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 import java.util.function.Consumer;
 
+import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import reactor.core.Disposable;
 import reactor.core.Fuseable;
-import reactor.core.Receiver;
+import reactor.core.Scannable;
+import reactor.util.context.Context;
 
 /**
  * Connects to the underlying Flux once the given amount of Subscribers
@@ -32,7 +34,7 @@ import reactor.core.Receiver;
  * @see <a href="https://github.com/reactor/reactive-streams-commons">Reactive-Streams-Commons</a>
  */
 final class FluxAutoConnectFuseable<T> extends Flux<T>
-		implements Receiver, Fuseable {
+		implements Scannable, Fuseable {
 
 	final ConnectableFlux<? extends T> source;
 
@@ -55,8 +57,8 @@ final class FluxAutoConnectFuseable<T> extends Flux<T>
 	}
 	
 	@Override
-	public void subscribe(Subscriber<? super T> s) {
-		source.subscribe(s);
+	public void subscribe(Subscriber<? super T> s, Context context) {
+		source.subscribe(s, context);
 		if (remaining > 0 && REMAINING.decrementAndGet(this) == 0) {
 			source.connect(cancelSupport);
 		}
@@ -68,7 +70,13 @@ final class FluxAutoConnectFuseable<T> extends Flux<T>
 	}
 
 	@Override
-	public Object upstream() {
-		return source;
+	public Object scan(Attr key) {
+		switch (key){
+			case PREFETCH:
+				return getPrefetch();
+			case PARENT:
+				return source;
+		}
+		return null;
 	}
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,15 +21,17 @@ import java.util.function.Supplier;
 import org.reactivestreams.*;
 
 import reactor.core.Fuseable;
+import reactor.core.Scannable;
 import reactor.core.scheduler.Scheduler;
 import reactor.core.scheduler.Scheduler.Worker;
+import reactor.util.context.Context;
 
 /**
  * Ensures each 'rail' from upstream runs on a Worker from a Scheduler.
  *
  * @param <T> the value type
  */
-final class ParallelRunOn<T> extends ParallelFlux<T> implements Fuseable {
+final class ParallelRunOn<T> extends ParallelFlux<T> implements Scannable, Fuseable {
 	final ParallelFlux<? extends T> source;
 	
 	final Scheduler scheduler;
@@ -48,9 +50,20 @@ final class ParallelRunOn<T> extends ParallelFlux<T> implements Fuseable {
 		this.prefetch = prefetch;
 		this.queueSupplier = queueSupplier;
 	}
+
+	@Override
+	public Object scan(Attr key) {
+		switch (key){
+			case PARENT:
+				return source;
+			case PREFETCH:
+				return getPrefetch();
+		}
+		return null;
+	}
 	
 	@Override
-	public void subscribe(Subscriber<? super T>[] subscribers) {
+	public void subscribe(Subscriber<? super T>[] subscribers, Context ctx) {
 		if (!validate(subscribers)) {
 			return;
 		}
@@ -71,7 +84,7 @@ final class ParallelRunOn<T> extends ParallelFlux<T> implements Fuseable {
 			parents[i] = parent;
 		}
 		
-		source.subscribe(parents);
+		source.subscribe(parents, ctx);
 	}
 
 	@Override

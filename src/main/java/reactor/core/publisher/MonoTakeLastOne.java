@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,45 +18,43 @@ package reactor.core.publisher;
 import java.util.NoSuchElementException;
 import java.util.Objects;
 
-import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
 import reactor.core.Fuseable;
-import reactor.core.Receiver;
+import reactor.util.context.Context;
 
 /**
  * Take the very last value from a Publisher source and and emit that one.
  *
  * @param <T> the value type
  */
-final class MonoTakeLastOne<T> extends MonoSource<T, T> implements Fuseable {
+final class MonoTakeLastOne<T> extends MonoOperator<T, T> implements Fuseable {
 
 	final T defaultValue;
 
-    public MonoTakeLastOne(Publisher<? extends T> source) {
+    MonoTakeLastOne(Flux<? extends T> source) {
         super(source);
 	    this.defaultValue = null;
     }
 
-	public MonoTakeLastOne(Publisher<? extends T> source, T defaultValue) {
+	MonoTakeLastOne(Flux<? extends T> source, T defaultValue) {
 		super(source);
 		this.defaultValue = Objects.requireNonNull(defaultValue, "defaultValue");
 	}
 
     @Override
-    public void subscribe(Subscriber<? super T> s) {
-        source.subscribe(new TakeLastOneSubscriber<>(s, defaultValue, true));
+    public void subscribe(Subscriber<? super T> s, Context ctx) {
+        source.subscribe(new TakeLastOneSubscriber<>(s, defaultValue, true), ctx);
     }
 
 	static final class TakeLastOneSubscriber<T>
-			extends Operators.MonoSubscriber<T, T>
-			implements Receiver {
+			extends Operators.MonoSubscriber<T, T>  {
 
 		final boolean mustEmit;
 		final T       defaultValue;
 		Subscription s;
 
-		public TakeLastOneSubscriber(Subscriber<? super T> actual,
+		TakeLastOneSubscriber(Subscriber<? super T> actual,
 				T defaultValue,
 				boolean mustEmit) {
 			super(actual);
@@ -74,6 +72,15 @@ final class MonoTakeLastOne<T> extends MonoSource<T, T> implements Fuseable {
 				s.request(Long.MAX_VALUE);
 			}
 
+		}
+
+		@Override
+		public Object scan(Attr key) {
+			switch (key){
+				case PARENT:
+					return s;
+			}
+			return super.scan(key);
 		}
 
 		@Override
@@ -111,11 +118,6 @@ final class MonoTakeLastOne<T> extends MonoSource<T, T> implements Fuseable {
 		@Override
 		public void setValue(T value) {
 			// value is always in a field
-		}
-
-		@Override
-		public Object upstream() {
-			return s;
 		}
 	}
 }

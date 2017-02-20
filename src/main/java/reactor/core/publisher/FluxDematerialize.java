@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,26 +21,27 @@ import java.util.Iterator;
 import java.util.concurrent.atomic.AtomicLongFieldUpdater;
 import java.util.function.BooleanSupplier;
 
-import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
+import reactor.util.context.Context;
 
 /**
  * @author Stephane Maldini
  */
-final class FluxDematerialize<T> extends FluxSource<Signal<T>, T> {
+final class FluxDematerialize<T> extends FluxOperator<Signal<T>, T> {
 
-	FluxDematerialize(Publisher<Signal<T>> source) {
+	FluxDematerialize(Flux<Signal<T>> source) {
 		super(source);
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super T> subscriber) {
-		source.subscribe(new DematerializeSubscriber<>(subscriber));
+	public void subscribe(Subscriber<? super T> subscriber, Context ctx) {
+		source.subscribe(new DematerializeSubscriber<>(subscriber), ctx);
 	}
 
 	static final class DematerializeSubscriber<T> extends AbstractQueue<T>
-			implements Subscriber<Signal<T>>, Subscription, BooleanSupplier {
+			implements InnerOperator<Signal<T>, T>,
+			           BooleanSupplier {
 
 		final Subscriber<? super T> actual;
 
@@ -64,6 +65,25 @@ final class FluxDematerialize<T> extends FluxSource<Signal<T>, T> {
 
 		DematerializeSubscriber(Subscriber<? super T> subscriber) {
 			this.actual = subscriber;
+		}
+
+		@Override
+		public Object scan(Attr key) {
+			switch (key) {
+				case PARENT:
+					return s;
+				case TERMINATED:
+					return done;
+				case REQUESTED_FROM_DOWNSTREAM:
+					return requested;
+				case ERROR:
+					return error;
+				case CANCELLED:
+					return cancelled;
+				case BUFFERED:
+					return size();
+			}
+			return InnerOperator.super.scan(key);
 		}
 
 		@Override
@@ -112,7 +132,7 @@ final class FluxDematerialize<T> extends FluxSource<Signal<T>, T> {
 			error = t;
 			long p = produced;
 			if (p != 0L) {
-				REQUESTED.addAndGet(this, -p);
+				Operators.addAndGet(REQUESTED, this, -p);
 			}
 			DrainUtils.postCompleteDelayError(actual, this, REQUESTED, this, this, error);
 		}
@@ -125,7 +145,7 @@ final class FluxDematerialize<T> extends FluxSource<Signal<T>, T> {
 			done = true;
 			long p = produced;
 			if (p != 0L) {
-				REQUESTED.addAndGet(this, -p);
+				Operators.addAndGet(REQUESTED, this, -p);
 			}
 			DrainUtils.postCompleteDelayError(actual, this, REQUESTED, this, this, error);
 		}
@@ -149,6 +169,11 @@ final class FluxDematerialize<T> extends FluxSource<Signal<T>, T> {
 		public void cancel() {
 			cancelled = true;
 			s.cancel();
+		}
+
+		@Override
+		public Subscriber<? super T> actual() {
+			return actual;
 		}
 
 		@Override

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,13 +17,9 @@ package reactor.core.publisher;
 
 import java.util.ArrayDeque;
 
-import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
-import reactor.core.Fuseable;
-import reactor.core.Producer;
-import reactor.core.Receiver;
-import reactor.core.Trackable;
+import reactor.util.context.Context;
 
 /**
  * Skips the last N elements from the source stream.
@@ -31,11 +27,11 @@ import reactor.core.Trackable;
  * @param <T> the value type
  * @see <a href="https://github.com/reactor/reactive-streams-commons">Reactive-Streams-Commons</a>
  */
-final class FluxSkipLast<T> extends FluxSource<T, T> {
+final class FluxSkipLast<T> extends FluxOperator<T, T> {
 
 	final int n;
 
-	FluxSkipLast(Publisher<? extends T> source, int n) {
+	FluxSkipLast(Flux<? extends T> source, int n) {
 		super(source);
 		if (n < 0) {
 			throw new IllegalArgumentException("n >= 0 required but it was " + n);
@@ -44,8 +40,8 @@ final class FluxSkipLast<T> extends FluxSource<T, T> {
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super T> s) {
-		source.subscribe(new SkipLastSubscriber<>(s, n));
+	public void subscribe(Subscriber<? super T> s, Context ctx) {
+		source.subscribe(new SkipLastSubscriber<>(s, n), ctx);
 	}
 
 	//Fixme Does not implement ConditionalSubscriber until the full chain of operators
@@ -53,8 +49,7 @@ final class FluxSkipLast<T> extends FluxSource<T, T> {
 
 	static final class SkipLastSubscriber<T>
 			extends ArrayDeque<T>
-			implements Subscriber<T>, Receiver, Producer, Subscription,
-			           Trackable {
+			implements InnerOperator<T, T> {
 		final Subscriber<? super T> actual;
 
 		final int n;
@@ -96,31 +91,23 @@ final class FluxSkipLast<T> extends FluxSource<T, T> {
 			actual.onComplete();
 		}
 
+
 		@Override
-		public long getPending() {
-			return size();
+		public Object scan(Attr key) {
+			switch (key){
+				case PARENT:
+					return s;
+				case BUFFERED:
+					return size();
+			}
+			return InnerOperator.super.scan(key);
 		}
 
 		@Override
-		public long getCapacity() {
-			return n;
-		}
-
-		@Override
-		public boolean isStarted() {
-			return s != null;
-		}
-
-		@Override
-		public Object downstream() {
+		public Subscriber<? super T> actual() {
 			return actual;
 		}
 
-		@Override
-		public Object upstream() {
-			return s;
-		}
-		
 		@Override
 		public void request(long n) {
 			s.request(n);

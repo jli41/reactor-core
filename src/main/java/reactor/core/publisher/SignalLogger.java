@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -29,7 +29,7 @@ import reactor.core.Fuseable;
 import reactor.core.publisher.FluxOnAssembly.AssemblySnapshotException;
 import reactor.util.Logger;
 import reactor.util.Loggers;
-
+import reactor.util.context.Context;
 
 /**
  * A logging interceptor that intercepts all reactive calls and trace them.
@@ -40,16 +40,18 @@ import reactor.util.Loggers;
  */
 final class SignalLogger<IN> implements SignalPeek<IN> {
 
-	final static int SUBSCRIBE       = 0b010000000;
-	final static int ON_SUBSCRIBE    = 0b001000000;
-	final static int ON_NEXT         = 0b000100000;
-	final static int ON_ERROR        = 0b000010000;
-	final static int ON_COMPLETE     = 0b000001000;
-	final static int REQUEST         = 0b000000100;
-	final static int CANCEL          = 0b000000010;
-	final static int AFTER_TERMINATE = 0b000000001;
-	final static int ALL             =
-			CANCEL | ON_COMPLETE | ON_ERROR | REQUEST | ON_SUBSCRIBE | ON_NEXT | SUBSCRIBE;
+	final static int CONTEXT_PARENT    = 0b1000000000;
+	final static int CONTEXT_PROPAGATE = 0b0100000000;
+	final static int SUBSCRIBE         = 0b0010000000;
+	final static int ON_SUBSCRIBE      = 0b0001000000;
+	final static int ON_NEXT           = 0b0000100000;
+	final static int ON_ERROR          = 0b0000010000;
+	final static int ON_COMPLETE       = 0b0000001000;
+	final static int REQUEST           = 0b0000000100;
+	final static int CANCEL            = 0b0000000010;
+	final static int AFTER_TERMINATE   = 0b0000000001;
+	final static int ALL               =
+			CONTEXT_PARENT | CONTEXT_PROPAGATE | CANCEL | ON_COMPLETE | ON_ERROR | REQUEST | ON_SUBSCRIBE | ON_NEXT | SUBSCRIBE;
 
 	final static AtomicLong IDS = new AtomicLong(1);
 
@@ -60,12 +62,12 @@ final class SignalLogger<IN> implements SignalPeek<IN> {
 	final int     options;
 	final Level   level;
 	final String  operatorLine;
-	final long   id;
+	final long    id;
 
-	static final String LOG_TEMPLATE = "{}({})";
+	static final String LOG_TEMPLATE          = "{}({})";
 	static final String LOG_TEMPLATE_FUSEABLE = "| {}({})";
 
-	public SignalLogger(Publisher<IN> source,
+	SignalLogger(Publisher<IN> source,
 			String category,
 			Level level,
 			boolean correlateStack,
@@ -73,7 +75,7 @@ final class SignalLogger<IN> implements SignalPeek<IN> {
 		this(source, category, level, correlateStack, Loggers::getLogger, options);
 	}
 
-	public SignalLogger(Publisher<IN> source,
+	SignalLogger(Publisher<IN> source,
 			String category,
 			Level level,
 			boolean correlateStack,
@@ -84,34 +86,33 @@ final class SignalLogger<IN> implements SignalPeek<IN> {
 		this.id = IDS.getAndIncrement();
 		this.fuseable = source instanceof Fuseable;
 
-		if(correlateStack){
+		if (correlateStack) {
 			operatorLine = FluxOnAssembly.extract(FluxOnAssembly.getStacktrace(null,
-					new AssemblySnapshotException()),
-					false);
+					new AssemblySnapshotException()), false);
 		}
-		else{
+		else {
 			operatorLine = null;
 		}
 
-		boolean generated = category == null || category.isEmpty() || category.endsWith(".");
+		boolean generated =
+				category == null || category.isEmpty() || category.endsWith(".");
 
 		category = generated && category == null ? "reactor." : category;
 		if (generated) {
 			if (source instanceof Mono) {
 				category += "Mono." + source.getClass()
-				                           .getSimpleName()
-				                           .replace("Mono", "");
-			}
-			else if(source instanceof ParallelFlux){
-				category += "Parallel." + source.getClass()
 				                            .getSimpleName()
-				                            .replace("Parallel", "")
-				                            .replace("Unordered", "");
+				                            .replace("Mono", "");
+			}
+			else if (source instanceof ParallelFlux) {
+				category += "Parallel." + source.getClass()
+				                                .getSimpleName()
+				                                .replace("Parallel", "");
 			}
 			else {
 				category += "Flux." + source.getClass()
-				                           .getSimpleName()
-				                           .replace("Flux", "");
+				                            .getSimpleName()
+				                            .replace("Flux", "");
 			}
 			category += "." + id;
 		}
@@ -119,31 +120,37 @@ final class SignalLogger<IN> implements SignalPeek<IN> {
 		this.log = loggerSupplier.apply(category);
 
 		this.level = level;
-		if(options == null || options.length == 0){
+		if (options == null || options.length == 0) {
 			this.options = ALL;
 		}
-		else{
+		else {
 			int opts = 0;
-			for(SignalType option : options){
-				if(option == SignalType.CANCEL){
+			for (SignalType option : options) {
+				if (option == SignalType.CANCEL) {
 					opts |= CANCEL;
 				}
-				else if(option == SignalType.ON_SUBSCRIBE){
+				if (option == SignalType.CURRENT_CONTEXT) {
+					opts |= CONTEXT_PARENT;
+				}
+				if (option == SignalType.ON_CONTEXT) {
+					opts |= CONTEXT_PROPAGATE;
+				}
+				else if (option == SignalType.ON_SUBSCRIBE) {
 					opts |= ON_SUBSCRIBE;
 				}
-				else if(option == SignalType.REQUEST){
+				else if (option == SignalType.REQUEST) {
 					opts |= REQUEST;
 				}
-				else if(option == SignalType.ON_NEXT){
+				else if (option == SignalType.ON_NEXT) {
 					opts |= ON_NEXT;
 				}
-				else if(option == SignalType.ON_ERROR){
+				else if (option == SignalType.ON_ERROR) {
 					opts |= ON_ERROR;
 				}
-				else if(option == SignalType.ON_COMPLETE){
+				else if (option == SignalType.ON_COMPLETE) {
 					opts |= ON_COMPLETE;
 				}
-				else if(option == SignalType.SUBSCRIBE){
+				else if (option == SignalType.SUBSCRIBE) {
 					opts |= SUBSCRIBE;
 				}
 				else if (option == SignalType.AFTER_TERMINATE) {
@@ -154,9 +161,18 @@ final class SignalLogger<IN> implements SignalPeek<IN> {
 		}
 	}
 
+	@Override
+	public Object scan(Attr key) {
+		switch (key){
+			case PARENT:
+				return source;
+		}
+		return null;
+	}
+
 	void log(Object... args) {
 		String line = fuseable ? LOG_TEMPLATE_FUSEABLE : LOG_TEMPLATE;
-		if(operatorLine != null){
+		if (operatorLine != null) {
 			line = line + " " + operatorLine;
 		}
 		if (level == Level.FINEST) {
@@ -184,6 +200,22 @@ final class SignalLogger<IN> implements SignalPeek<IN> {
 		return null;
 	}
 
+	@Override
+	public Consumer<? super Context> onContextPropagateCall() {
+		if ((options & CONTEXT_PROPAGATE) == CONTEXT_PROPAGATE && (level != Level.INFO || log.isInfoEnabled())) {
+			return c -> log(SignalType.ON_CONTEXT, c, source);
+		}
+		return null;
+	}
+
+	@Override
+	public Consumer<? super Context> onContextParentCall() {
+		if ((options & CONTEXT_PARENT) == CONTEXT_PARENT && (level != Level.INFO || log.isInfoEnabled())) {
+			return c -> log(SignalType.CURRENT_CONTEXT, c, source);
+		}
+		return null;
+	}
+
 	String subscriptionAsString(Subscription s) {
 		if (s == null) {
 			return "null subscription";
@@ -201,7 +233,8 @@ final class SignalLogger<IN> implements SignalPeek<IN> {
 		if (name == null) {
 			name = clazz.getName();
 		}
-		name = name.replaceFirst(clazz.getPackage().getName() + ".", "");
+		name = name.replaceFirst(clazz.getPackage()
+		                              .getName() + ".", "");
 		asString.append(name);
 
 		return asString.toString();
@@ -219,7 +252,7 @@ final class SignalLogger<IN> implements SignalPeek<IN> {
 	public Consumer<? super Throwable> onErrorCall() {
 		if ((options & ON_ERROR) == ON_ERROR && log.isErrorEnabled()) {
 			String line = fuseable ? LOG_TEMPLATE_FUSEABLE : LOG_TEMPLATE;
-			if(operatorLine != null){
+			if (operatorLine != null) {
 				line = line + " " + operatorLine;
 			}
 			String s = line;
@@ -270,8 +303,4 @@ final class SignalLogger<IN> implements SignalPeek<IN> {
 		return "/loggers/" + log.getName() + "/" + id;
 	}
 
-	@Override
-	public Publisher<? extends IN> upstream() {
-		return source;
-	}
 }

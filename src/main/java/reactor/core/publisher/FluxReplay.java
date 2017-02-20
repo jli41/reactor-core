@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,33 +16,29 @@
 
 package reactor.core.publisher;
 
-import java.util.Arrays;
-import java.util.Iterator;
 import java.util.Objects;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 import java.util.concurrent.atomic.AtomicLongFieldUpdater;
 import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
 import java.util.function.Consumer;
+import java.util.stream.Stream;
 
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
 import reactor.core.Disposable;
 import reactor.core.Fuseable;
-import reactor.core.MultiProducer;
-import reactor.core.Producer;
-import reactor.core.Receiver;
-import reactor.core.Trackable;
+import reactor.core.Scannable;
 import reactor.core.scheduler.Scheduler;
 import reactor.util.concurrent.QueueSupplier;
+import reactor.util.context.Context;
 
 /**
  * @param <T>
  * @see <a href="https://github.com/reactor/reactive-streams-commons">Reactive-Streams-Commons</a>
  */
-final class FluxReplay<T> extends ConnectableFlux<T>
-		implements Producer, Fuseable {
+final class FluxReplay<T> extends ConnectableFlux<T> implements Scannable, Fuseable {
 
 	final Publisher<T>   source;
 	final int            history;
@@ -75,11 +71,6 @@ final class FluxReplay<T> extends ConnectableFlux<T>
 	@Override
 	public long getPrefetch() {
 		return history;
-	}
-
-	@Override
-	public Object downstream() {
-		return connection;
 	}
 
 	ReplaySubscriber<T> newState() {
@@ -123,7 +114,7 @@ final class FluxReplay<T> extends ConnectableFlux<T>
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super T> s) {
+	public void subscribe(Subscriber<? super T> s, Context ctx) {
 		ReplayInner<T> inner = new ReplayInner<>(s);
 		s.onSubscribe(inner);
 		for (; ; ) {
@@ -148,12 +139,23 @@ final class FluxReplay<T> extends ConnectableFlux<T>
 	}
 
 	@Override
-	public Object upstream() {
+	public Publisher<? extends T> upstream() {
 		return source;
 	}
 
+	@Override
+	public Object scan(Scannable.Attr key) {
+		switch (key){
+			case PREFETCH:
+				return getPrefetch();
+			case PARENT:
+				return source;
+		}
+		return null;
+	}
+
 	static final class ReplaySubscriber<T>
-			implements Subscriber<T>, Receiver, MultiProducer, Trackable, Disposable {
+			implements InnerConsumer<T>, Disposable {
 
 		final FluxReplay<T>                   parent;
 		final ReplayProcessor.ReplayBuffer<T> buffer;
@@ -343,8 +345,7 @@ final class FluxReplay<T> extends ConnectableFlux<T>
 			}
 		}
 
-		@Override
-		public boolean isTerminated() {
+		boolean isTerminated() {
 			return subscribers == TERMINATED;
 		}
 
@@ -367,46 +368,36 @@ final class FluxReplay<T> extends ConnectableFlux<T>
 		}
 
 		@Override
-		public long getCapacity() {
-			return buffer instanceof ReplayProcessor.UnboundedReplayBuffer ?
-					Long.MAX_VALUE : buffer.capacity();
+		public Object scan(Attr key) {
+			switch (key){
+				case PARENT:
+					return s;
+				case PREFETCH:
+					return Integer.MAX_VALUE;
+				case CAPACITY:
+					return buffer.capacity();
+				case ERROR:
+					return buffer.getError();
+				case BUFFERED:
+					return buffer.size();
+				case TERMINATED:
+					return isTerminated();
+				case CANCELLED:
+					return cancelled;
+			}
+			return null;
 		}
 
 		@Override
-		public long getPending() {
-			return buffer.size();
+		public Stream<? extends Scannable> inners() {
+			return Stream.of(subscribers);
 		}
 
 		@Override
-		public boolean isCancelled() {
-			return cancelled;
+		public boolean isDisposed() {
+			return cancelled || buffer.isDone();
 		}
 
-		@Override
-		public boolean isStarted() {
-			return !cancelled && !buffer.isDone() && s != null;
-		}
-
-		@Override
-		public Throwable getError() {
-			return buffer.getError();
-		}
-
-		@Override
-		public Iterator<?> downstreams() {
-			return Arrays.asList(subscribers)
-			             .iterator();
-		}
-
-		@Override
-		public long downstreamCount() {
-			return subscribers.length;
-		}
-
-		@Override
-		public Object upstream() {
-			return s;
-		}
 	}
 
 	static final class ReplayInner<T>
@@ -459,6 +450,23 @@ final class FluxReplay<T> extends ConnectableFlux<T>
 		}
 
 		@Override
+		public Object scan(Attr key) {
+			switch (key) {
+				case PARENT:
+					return parent;
+				case TERMINATED:
+					return parent != null && parent.isTerminated();
+				case BUFFERED:
+					return size();
+				case CANCELLED:
+					return isCancelled();
+				case REQUESTED_FROM_DOWNSTREAM:
+					return isCancelled() ? 0L : requested;
+			}
+			return ReplayProcessor.ReplaySubscription.super.scan(key);
+		}
+
+		@Override
 		public void cancel() {
 			if (CANCELLED.compareAndSet(this, 0, 1)) {
 				ReplaySubscriber<T> p = parent;
@@ -472,7 +480,7 @@ final class FluxReplay<T> extends ConnectableFlux<T>
 		}
 
 		@Override
-		public long requestedFromDownstream() {
+		public long requested() {
 			return requested;
 		}
 
@@ -482,17 +490,7 @@ final class FluxReplay<T> extends ConnectableFlux<T>
 		}
 
 		@Override
-		public boolean isStarted() {
-			return !isCancelled();
-		}
-
-		@Override
-		public boolean isTerminated() {
-			return parent != null && parent.isTerminated();
-		}
-
-		@Override
-		public Subscriber<? super T> downstream() {
+		public Subscriber<? super T> actual() {
 			return actual;
 		}
 

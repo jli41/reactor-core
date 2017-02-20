@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,10 +21,10 @@ import java.util.function.BiConsumer;
 import java.util.function.Function;
 import java.util.stream.Collector;
 
-import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
 import reactor.core.Fuseable;
+import reactor.util.context.Context;
 
 /**
  * Collects the values from the source sequence into a {@link java.util.stream.Collector}
@@ -36,18 +36,18 @@ import reactor.core.Fuseable;
  *
  * @see <a href="https://github.com/reactor/reactive-streams-commons">Reactive-Streams-Commons</a>
  */
-final class MonoStreamCollector<T, A, R> extends MonoSource<T, R> implements Fuseable {
+final class MonoStreamCollector<T, A, R> extends MonoOperator<T, R> implements Fuseable {
 
 	final Collector<? super T, A, ? extends R> collector;
 
-	MonoStreamCollector(Publisher<? extends T> source,
+	MonoStreamCollector(Flux<? extends T> source,
 			Collector<? super T, A, ? extends R> collector) {
 		super(source);
 		this.collector = Objects.requireNonNull(collector, "collector");
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super R> s) {
+	public void subscribe(Subscriber<? super R> s, Context ctx) {
 		A container;
 		BiConsumer<? super A, ? super T> accumulator;
 		Function<? super A, ? extends R> finisher;
@@ -68,7 +68,7 @@ final class MonoStreamCollector<T, A, R> extends MonoSource<T, R> implements Fus
 		source.subscribe(new StreamCollectorSubscriber<>(s,
 				container,
 				accumulator,
-				finisher));
+				finisher), ctx);
 	}
 
 	static final class StreamCollectorSubscriber<T, A, R>
@@ -92,6 +92,17 @@ final class MonoStreamCollector<T, A, R> extends MonoSource<T, R> implements Fus
 			this.container = container;
 			this.accumulator = accumulator;
 			this.finisher = finisher;
+		}
+
+		@Override
+		public Object scan(Attr key) {
+			switch (key){
+				case TERMINATED:
+					return done;
+				case PARENT:
+					return s;
+			}
+			return super.scan(key);
 		}
 
 		@Override

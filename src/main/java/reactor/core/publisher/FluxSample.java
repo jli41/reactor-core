@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,11 +18,14 @@ package reactor.core.publisher;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicLongFieldUpdater;
 import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
+import java.util.stream.Stream;
 
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
 import reactor.core.Exceptions;
+import reactor.core.Scannable;
+import reactor.util.context.Context;
 
 /**
  * Samples the main source and emits its latest value whenever the other Publisher
@@ -40,11 +43,11 @@ import reactor.core.Exceptions;
  * @param <U> the value type of the sampler (irrelevant)
  * @see <a href="https://github.com/reactor/reactive-streams-commons">Reactive-Streams-Commons</a>
  */
-final class FluxSample<T, U> extends FluxSource<T, T> {
+final class FluxSample<T, U> extends FluxOperator<T, T> {
 
 	final Publisher<U> other;
 
-	public FluxSample(Publisher<? extends T> source, Publisher<U> other) {
+	FluxSample(Flux<? extends T> source, Publisher<U> other) {
 		super(source);
 		this.other = Objects.requireNonNull(other, "other");
 	}
@@ -55,7 +58,7 @@ final class FluxSample<T, U> extends FluxSource<T, T> {
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super T> s) {
+	public void subscribe(Subscriber<? super T> s, Context ctx) {
 
 		Subscriber<T> serial = Operators.serialize(s);
 
@@ -63,15 +66,14 @@ final class FluxSample<T, U> extends FluxSource<T, T> {
 
 		s.onSubscribe(main);
 
-		other.subscribe(new SampleOtherSubscriber<>(main));
+		other.subscribe(new SampleOther<>(main));
 
-		source.subscribe(main);
+		source.subscribe(main, ctx);
 	}
 
 	static final class SampleMainSubscriber<T>
-	  implements Subscriber<T>, Subscription {
-
-		final Subscriber<? super T> actual;
+		extends CachedContextProducer<T>
+			implements InnerOperator<T, T> {
 
 		volatile T value;
 		@SuppressWarnings("rawtypes")
@@ -94,8 +96,28 @@ final class FluxSample<T, U> extends FluxSource<T, T> {
 		static final AtomicLongFieldUpdater<SampleMainSubscriber> REQUESTED =
 		  AtomicLongFieldUpdater.newUpdater(SampleMainSubscriber.class, "requested");
 
-		public SampleMainSubscriber(Subscriber<? super T> actual) {
-			this.actual = actual;
+		SampleMainSubscriber(Subscriber<? super T> actual) {
+			super(actual);
+		}
+
+		@Override
+		public Stream<? extends Scannable> inners() {
+			return Stream.of(Scannable.from(other));
+		}
+
+		@Override
+		public Object scan(Attr key) {
+			switch (key) {
+				case REQUESTED_FROM_DOWNSTREAM:
+					return requested;
+				case PARENT:
+					return main;
+				case CANCELLED:
+					return main == Operators.cancelledSubscription();
+				case BUFFERED:
+					return value != null ? 1 : 0;
+			}
+			return InnerOperator.super.scan(key);
 		}
 
 		@Override
@@ -183,11 +205,31 @@ final class FluxSample<T, U> extends FluxSource<T, T> {
 		}
 	}
 
-	static final class SampleOtherSubscriber<T, U> implements Subscriber<U> {
+	static final class SampleOther<T, U> implements InnerConsumer<U> {
 		final SampleMainSubscriber<T> main;
 
-		public SampleOtherSubscriber(SampleMainSubscriber<T> main) {
+		SampleOther(SampleMainSubscriber<T> main) {
 			this.main = main;
+		}
+
+		@Override
+		public Object scan(Attr key) {
+			switch (key) {
+				case PARENT:
+					return main.other;
+				case ACTUAL:
+					return main;
+				case CANCELLED:
+					return main.other == Operators.cancelledSubscription();
+				case PREFETCH:
+					return Long.MAX_VALUE;
+			}
+			return null;
+		}
+
+		@Override
+		public Context currentContext() {
+			return main.currentContext();
 		}
 
 		@Override

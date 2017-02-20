@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,6 +23,8 @@ import java.util.function.Supplier;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
 import reactor.core.Fuseable;
+import reactor.core.Scannable;
+import reactor.util.context.Context;
 
 /**
  * Reduce the sequence of values in each 'rail' to a single value.
@@ -30,7 +32,7 @@ import reactor.core.Fuseable;
  * @param <T> the input value type
  * @param <C> the collection type
  */
-final class ParallelCollect<T, C> extends ParallelFlux<C> implements Fuseable {
+final class ParallelCollect<T, C> extends ParallelFlux<C> implements Scannable, Fuseable {
 
 	final ParallelFlux<? extends T> source;
 
@@ -47,12 +49,23 @@ final class ParallelCollect<T, C> extends ParallelFlux<C> implements Fuseable {
 	}
 
 	@Override
+	public Object scan(Attr key) {
+		switch (key){
+			case PARENT:
+				return source;
+			case PREFETCH:
+				return getPrefetch();
+		}
+		return null;
+	}
+
+	@Override
 	public long getPrefetch() {
 		return Integer.MAX_VALUE;
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super C>[] subscribers) {
+	public void subscribe(Subscriber<? super C>[] subscribers, Context ctx) {
 		if (!validate(subscribers)) {
 			return;
 		}
@@ -78,7 +91,7 @@ final class ParallelCollect<T, C> extends ParallelFlux<C> implements Fuseable {
 					collector);
 		}
 
-		source.subscribe(parents);
+		source.subscribe(parents, ctx);
 	}
 
 	void reportError(Subscriber<?>[] subscribers, Throwable ex) {

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,12 +20,9 @@ import java.util.Objects;
 import java.util.concurrent.atomic.AtomicLongFieldUpdater;
 import java.util.function.Consumer;
 
-import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
-import reactor.core.Loopback;
-import reactor.core.Producer;
-import reactor.core.Trackable;
+import reactor.util.context.Context;
 
 /**
  * Drops values if the subscriber doesn't request fast enough.
@@ -33,7 +30,7 @@ import reactor.core.Trackable;
  * @param <T> the value type
  * @see <a href="https://github.com/reactor/reactive-streams-commons">Reactive-Streams-Commons</a>
  */
-final class FluxOnBackpressureDrop<T> extends FluxSource<T, T> {
+final class FluxOnBackpressureDrop<T> extends FluxOperator<T, T> {
 
 	static final Consumer<Object> NOOP = t -> {
 
@@ -41,12 +38,12 @@ final class FluxOnBackpressureDrop<T> extends FluxSource<T, T> {
 
 	final Consumer<? super T> onDrop;
 
-	public FluxOnBackpressureDrop(Publisher<? extends T> source) {
+	FluxOnBackpressureDrop(Flux<? extends T> source) {
 		super(source);
 		this.onDrop = NOOP;
 	}
 
-	public FluxOnBackpressureDrop(Publisher<? extends T> source,
+	FluxOnBackpressureDrop(Flux<? extends T> source,
 			Consumer<? super T> onDrop) {
 		super(source);
 		this.onDrop = Objects.requireNonNull(onDrop, "onDrop");
@@ -58,12 +55,12 @@ final class FluxOnBackpressureDrop<T> extends FluxSource<T, T> {
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super T> s) {
-		source.subscribe(new DropSubscriber<>(s, onDrop));
+	public void subscribe(Subscriber<? super T> s, Context ctx) {
+		source.subscribe(new DropSubscriber<>(s, onDrop), ctx);
 	}
 
 	static final class DropSubscriber<T>
-			implements Subscriber<T>, Subscription, Producer, Loopback, Trackable {
+			implements InnerOperator<T, T> {
 
 		final Subscriber<? super T> actual;
 		final Consumer<? super T>   onDrop;
@@ -77,7 +74,7 @@ final class FluxOnBackpressureDrop<T> extends FluxSource<T, T> {
 
 		boolean done;
 
-		public DropSubscriber(Subscriber<? super T> actual, Consumer<? super T> onDrop) {
+		DropSubscriber(Subscriber<? super T> actual, Consumer<? super T> onDrop) {
 			this.actual = actual;
 			this.onDrop = onDrop;
 		}
@@ -158,28 +155,25 @@ final class FluxOnBackpressureDrop<T> extends FluxSource<T, T> {
 		}
 
 		@Override
-		public boolean isStarted() {
-			return s != null && !done;
-		}
-
-		@Override
-		public boolean isTerminated() {
-			return done;
-		}
-
-		@Override
-		public Object downstream() {
+		public Subscriber<? super T> actual() {
 			return actual;
 		}
 
 		@Override
-		public long requestedFromDownstream() {
-			return requested;
-		}
-
-		@Override
-		public Object connectedInput() {
-			return onDrop;
+		public Object scan(Attr key) {
+			switch (key) {
+				case PARENT:
+					return s;
+				case REQUESTED_FROM_DOWNSTREAM:
+					return requested;
+				case TERMINATED:
+					return done;
+				case CANCELLED:
+					return s == Operators.cancelledSubscription();
+				case PREFETCH:
+					return Integer.MAX_VALUE;
+			}
+			return InnerOperator.super.scan(key);
 		}
 
 

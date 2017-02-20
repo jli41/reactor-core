@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@ import java.util.function.Predicate;
 
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
+import reactor.util.context.Context;
 
 /**
  * Repeatedly subscribes to the source if the predicate returns true after
@@ -29,19 +30,20 @@ import org.reactivestreams.Subscriber;
  * @param <T> the value type
  * @see <a href="https://github.com/reactor/reactive-streams-commons">Reactive-Streams-Commons</a>
  */
-final class FluxRetryPredicate<T> extends FluxSource<T, T> {
+final class FluxRetryPredicate<T> extends FluxOperator<T, T> {
 
 	final Predicate<Throwable> predicate;
 
-	public FluxRetryPredicate(Publisher<? extends T> source, Predicate<Throwable> predicate) {
+	FluxRetryPredicate(Flux<? extends T> source, Predicate<Throwable> predicate) {
 		super(source);
 		this.predicate = Objects.requireNonNull(predicate, "predicate");
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super T> s) {
+	public void subscribe(Subscriber<? super T> s, Context ctx) {
 
-		RetryPredicateSubscriber<T> parent = new RetryPredicateSubscriber<>(source, s, predicate);
+		RetryPredicateSubscriber<T> parent = new RetryPredicateSubscriber<>(source, s,
+				predicate, ctx);
 
 		s.onSubscribe(parent);
 
@@ -64,9 +66,9 @@ final class FluxRetryPredicate<T> extends FluxSource<T, T> {
 
 		long produced;
 
-		public RetryPredicateSubscriber(Publisher<? extends T> source, 
-				Subscriber<? super T> actual, Predicate<Throwable> predicate) {
-			super(actual);
+		RetryPredicateSubscriber(Publisher<? extends T> source,
+				Subscriber<? super T> actual, Predicate<Throwable> predicate, Context ctx) {
+			super(actual, ctx);
 			this.source = source;
 			this.predicate = predicate;
 		}
@@ -75,7 +77,7 @@ final class FluxRetryPredicate<T> extends FluxSource<T, T> {
 		public void onNext(T t) {
 			produced++;
 
-			subscriber.onNext(t);
+			actual.onNext(t);
 		}
 
 		@Override
@@ -89,21 +91,21 @@ final class FluxRetryPredicate<T> extends FluxSource<T, T> {
 				if (_t != t) {
 					_t.addSuppressed(t);
 				}
-				subscriber.onError(_t);
+				actual.onError(_t);
 				return;
 			}
 			
 			if (b) {
 				resubscribe();
 			} else {
-				subscriber.onError(t);
+				actual.onError(t);
 			}
 		}
 		
 		@Override
 		public void onComplete() {
 			
-			subscriber.onComplete();
+			actual.onComplete();
 		}
 
 		void resubscribe() {

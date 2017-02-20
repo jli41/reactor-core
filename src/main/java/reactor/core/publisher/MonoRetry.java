@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,8 +15,8 @@
  */
 package reactor.core.publisher;
 
-import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
+import reactor.util.context.Context;
 
 /**
  * Repeatedly subscribes to the source sequence if it signals any error
@@ -27,11 +27,11 @@ import org.reactivestreams.Subscriber;
  * @param <T> the value type
  * @see <a href="https://github.com/reactor/reactive-streams-commons">Reactive-Streams-Commons</a>
  */
-final class MonoRetry<T> extends MonoSource<T, T> {
+final class MonoRetry<T> extends MonoOperator<T, T> {
 
 	final long times;
 
-	public MonoRetry(Publisher<? extends T> source, long times) {
+	MonoRetry(Mono<? extends T> source, long times) {
 		super(source);
 		if (times < 0L) {
 			throw new IllegalArgumentException("times >= 0 required");
@@ -40,8 +40,9 @@ final class MonoRetry<T> extends MonoSource<T, T> {
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super T> s) {
-		FluxRetry.RetrySubscriber<T> parent = new FluxRetry.RetrySubscriber<>(source, s, times);
+	public void subscribe(Subscriber<? super T> s, Context ctx) {
+		FluxRetry.RetrySubscriber<T> parent = new FluxRetry.RetrySubscriber<>(source,
+				s, times, ctx);
 
 		s.onSubscribe(parent);
 

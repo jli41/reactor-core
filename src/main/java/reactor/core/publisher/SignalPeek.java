@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,7 +21,8 @@ import java.util.function.LongConsumer;
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
-import reactor.core.Receiver;
+import reactor.core.Scannable;
+import reactor.util.context.Context;
 
 /**
  * Peek into the lifecycle and sequence signals.
@@ -30,7 +31,7 @@ import reactor.core.Receiver;
  *
  * @param <T> the value type of the sequence
  */
-interface SignalPeek<T> extends Receiver {
+interface SignalPeek<T> extends Scannable {
 
 	/**
 	 * A consumer that will observe {@link Subscriber#onSubscribe(Subscription)}
@@ -90,6 +91,19 @@ interface SignalPeek<T> extends Receiver {
 		return null;
 	}
 
-	@Override
-	Publisher<? extends T> upstream();
+	/**
+	 * A task that will run on {@link Context} propagation from upstream to downstream
+	 * @return A task that will run on {@link Context} propagation from upstream to downstream
+	 */
+	default Consumer<? super Context> onContextPropagateCall(){
+		return null;
+	}
+
+	/**
+	 * A task that will run on {@link Context} read from downstream to upstream
+	 * @return A task that will run on {@link Context} propagation from upstream to downstream
+	 */
+	default Consumer<? super Context> onContextParentCall(){
+		return null;
+	}
 }

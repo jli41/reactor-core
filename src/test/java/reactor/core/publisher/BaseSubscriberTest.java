@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *        http://www.apache.org/licenses/LICENSE-2.0
+ *       http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -22,11 +22,12 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.hamcrest.Matchers;
 import org.junit.Test;
 import org.reactivestreams.Subscription;
 import reactor.core.Disposable;
 import reactor.core.Exceptions;
-import reactor.test.StepVerifier;
+import reactor.util.context.Context;
 
 import static org.hamcrest.Matchers.*;
 import static org.junit.Assert.*;
@@ -50,10 +51,12 @@ public class BaseSubscriberTest {
 			public void hookOnNext(Integer integer) {
 				assertTrue("unexpected previous value for " + integer,
 						lastValue.compareAndSet(integer - 1, integer));
-				if (integer < 10)
+				if (integer < 10) {
 					request(1);
-				else
+				}
+				else {
 					cancel();
+				}
 			}
 
 			@Override
@@ -78,6 +81,95 @@ public class BaseSubscriberTest {
 	}
 
 	@Test
+	public void contextPassing() throws InterruptedException {
+		CountDownLatch latch = new CountDownLatch(1);
+		AtomicInteger lastValue = new AtomicInteger(0);
+		AtomicReference<Context> c = new AtomicReference<>();
+		AtomicReference<Context> innerC = new AtomicReference<>();
+
+		Flux<Integer> intFlux = Flux.range(1, 1000)
+		                            //old: test=baseSubscriber
+		                            //next: test=baseSubscriber_range
+		                            .contextualize((old, next) -> next.put("test", old.get("test") + "_range"))
+		                            .log()
+		                            .flatMap(d -> Flux.just(d)
+		                                              //old: test=baseSubscriber_range
+		                                              //next: test=baseSubscriber_range_innerFlatmap
+		                                              .contextualize((old, next) -> {
+			                                              if (innerC.get() == null) {
+				                                              innerC.set(next.put("test", old.get("test") + "_innerFlatmap"));
+			                                              }
+			                                              return Context.empty();
+		                                              })
+		                                              .log())
+		                            .map(d -> d)
+		                            .distinct()
+		                            //old: test=baseSubscriber_range
+		                            //next: test=baseSubscriber_range_distinct
+		                            .contextualize((old, next) -> next.put("test",
+				                            next.getOrDefault("test", old.get("test") + "_distinct")))
+		                            .log();
+		intFlux.subscribe(new BaseSubscriber<Integer>() {
+
+			@Override
+			public Context currentContext() {
+				return Context.empty()
+				              .put("test", "baseSubscriber");
+			}
+
+			@Override
+			protected void hookOnContext(Context context) {
+				c.set(context);
+			}
+
+			@Override
+			protected void hookOnSubscribe(Subscription subscription) {
+				request(1);
+			}
+
+			@Override
+			public void hookOnNext(Integer integer) {
+				assertTrue("unexpected previous value for " + integer,
+						lastValue.compareAndSet(integer - 1, integer));
+				if (integer < 10) {
+					request(1);
+				}
+				else {
+					cancel();
+				}
+			}
+
+			@Override
+			protected void hookOnComplete() {
+				fail("expected cancellation, not completion");
+			}
+
+			@Override
+			protected void hookOnError(Throwable throwable) {
+				fail("expected cancellation, not error " + throwable);
+			}
+
+			@Override
+			protected void hookFinally(SignalType type) {
+				latch.countDown();
+				assertThat(type, is(SignalType.CANCEL));
+			}
+		});
+
+		latch.await(500, TimeUnit.MILLISECONDS);
+		assertThat(lastValue.get(), is(10));
+
+		assertThat(c.get()
+		            .get("test"), is("baseSubscriber_distinct_range"));
+
+		assertThat(c.get()
+		            .get("test2"), Matchers.nullValue());
+
+		assertThat(innerC.get()
+		                 .get("test"), is("baseSubscriber_distinct_range_innerFlatmap"));
+	}
+
+	@Test
 	public void onErrorCallbackNotImplemented() {
 		Flux<String> flux = Flux.error(new IllegalStateException());
 
@@ -94,8 +186,10 @@ public class BaseSubscriberTest {
 				}
 			});
 			fail("expected UnsupportedOperationException");
-		} catch (UnsupportedOperationException e) {
-			assertThat(e.getClass().getSimpleName(), is("ErrorCallbackNotImplemented"));
+		}
+		catch (UnsupportedOperationException e) {
+			assertThat(e.getClass()
+			            .getSimpleName(), is("ErrorCallbackNotImplemented"));
 			assertThat(e.getCause(), is(instanceOf(IllegalStateException.class)));
 		}
 	}
@@ -142,7 +236,6 @@ public class BaseSubscriberTest {
 			protected void hookOnSubscribe(Subscription subscription) {
 				throw new OutOfMemoryError("boom");
 			}
-
 
 			@Override
 			protected void hookOnNext(String value) {
@@ -244,7 +337,8 @@ public class BaseSubscriberTest {
 			    }
 
 			    @Override
-			    protected void hookOnNext(String value) { }
+			    protected void hookOnNext(String value) {
+			    }
 
 			    @Override
 			    protected void hookOnError(Throwable throwable) {
@@ -279,19 +373,20 @@ public class BaseSubscriberTest {
 							requestUnbounded();
 						}
 
-						@Override
-						protected void hookOnNext(String value) { }
+				@Override
+				protected void hookOnNext(String value) {
+				}
 
-						@Override
-						protected void hookOnError(Throwable throwable) {
-							throw err;
-						}
+				@Override
+				protected void hookOnError(Throwable throwable) {
+					throw err;
+				}
 
-						@Override
-						protected void hookFinally(SignalType type) {
-							checkFinally.set(type);
-						}
-					});
+				@Override
+				protected void hookFinally(SignalType type) {
+					checkFinally.set(type);
+				}
+			});
 			fail("expected " + err);
 		}
 		catch (Throwable e) {
@@ -310,11 +405,12 @@ public class BaseSubscriberTest {
 		    .subscribe(new BaseSubscriber<String>() {
 			    @Override
 			    protected void hookOnSubscribe(Subscription subscription) {
-			    	this.cancel();
+				    this.cancel();
 			    }
 
 			    @Override
-			    protected void hookOnNext(String value) { }
+			    protected void hookOnNext(String value) {
+			    }
 
 			    @Override
 			    protected void hookOnError(Throwable throwable) {

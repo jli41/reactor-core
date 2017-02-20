@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,11 +19,10 @@ package reactor.core.publisher;
 import java.time.Duration;
 import java.util.concurrent.Callable;
 
-import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import reactor.core.Exceptions;
-import reactor.core.Fuseable;
 import reactor.core.publisher.FluxOnAssembly.AssemblySnapshotException;
+import reactor.util.context.Context;
 
 /**
  * Captures the current stacktrace when this publisher is created and makes it
@@ -39,12 +38,12 @@ import reactor.core.publisher.FluxOnAssembly.AssemblySnapshotException;
  *
  * @see <a href="https://github.com/reactor/reactive-streams-commons">https://github.com/reactor/reactive-streams-commons</a>
  */
-final class MonoCallableOnAssembly<T> extends MonoSource<T, T>
+final class MonoCallableOnAssembly<T> extends MonoOperator<T, T>
 		implements Callable<T>, AssemblyOp {
 
 	final AssemblySnapshotException stacktrace;
 
-	MonoCallableOnAssembly(Publisher<? extends T> source) {
+	MonoCallableOnAssembly(Mono<? extends T> source) {
 		super(source);
 		this.stacktrace = new AssemblySnapshotException();
 	}
@@ -68,8 +67,8 @@ final class MonoCallableOnAssembly<T> extends MonoSource<T, T>
 
 	@Override
 	@SuppressWarnings("unchecked")
-	public void subscribe(Subscriber<? super T> s) {
-		FluxOnAssembly.subscribe(s, source, stacktrace);
+	public void subscribe(Subscriber<? super T> s, Context ctx) {
+		FluxOnAssembly.subscribe(s, source, stacktrace, ctx);
 	}
 
 	@SuppressWarnings("unchecked")

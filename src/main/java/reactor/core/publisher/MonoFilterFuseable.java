@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,9 +18,9 @@ package reactor.core.publisher;
 import java.util.Objects;
 import java.util.function.Predicate;
 
-import org.reactivestreams.*;
-
+import org.reactivestreams.Subscriber;
 import reactor.core.Fuseable;
+import reactor.util.context.Context;
 
 /**
  * Filters out values that make a filter function return false.
@@ -28,23 +28,25 @@ import reactor.core.Fuseable;
  * @param <T> the value type
  * @see <a href="https://github.com/reactor/reactive-streams-commons">Reactive-Streams-Commons</a>
  */
-final class MonoFilterFuseable<T> extends MonoSource<T, T>
+final class MonoFilterFuseable<T> extends MonoOperator<T, T>
 		implements Fuseable {
 
 	final Predicate<? super T> predicate;
 
-	MonoFilterFuseable(Publisher<? extends T> source, Predicate<? super T> predicate) {
+	MonoFilterFuseable(Mono<? extends T> source, Predicate<? super T> predicate) {
 		super(source);
 		this.predicate = Objects.requireNonNull(predicate, "predicate");
 	}
 
 	@Override
 	@SuppressWarnings("unchecked")
-	public void subscribe(Subscriber<? super T> s) {
+	public void subscribe(Subscriber<? super T> s, Context ctx) {
 		if (s instanceof ConditionalSubscriber) {
-			source.subscribe(new FluxFilterFuseable.FilterFuseableConditionalSubscriber<>((ConditionalSubscriber<? super T>)s, predicate));
+			source.subscribe(new FluxFilterFuseable.FilterFuseableConditionalSubscriber<>((ConditionalSubscriber<? super T>)s, predicate),
+					ctx);
 			return;
 		}
-		source.subscribe(new FluxFilterFuseable.FilterFuseableSubscriber<>(s, predicate));
+		source.subscribe(new FluxFilterFuseable.FilterFuseableSubscriber<>(s, predicate),
+				ctx);
 	}
 }

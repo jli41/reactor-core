@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *        http://www.apache.org/licenses/LICENSE-2.0
+ *       http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -19,12 +19,10 @@ import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
-import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
 import reactor.core.Exceptions;
-import reactor.core.Producer;
-import reactor.core.Receiver;
+import reactor.util.context.Context;
 
 /**
  * Peek into the lifecycle events and signals of a sequence, passing around
@@ -40,7 +38,8 @@ import reactor.core.Receiver;
  * @param <S> the state type
  * @see <a href="https://github.com/reactor/reactive-streams-commons">Reactive-Streams-Commons</a>
  */
-final class FluxPeekStateful<T, S> extends FluxSource<T, T> implements SignalPeekStateful<T, S> {
+final class FluxPeekStateful<T, S> extends FluxOperator<T, T>
+		implements SignalPeekStateful<T, S> {
 
 	final Supplier<S> stateSeeder;
 
@@ -58,7 +57,7 @@ final class FluxPeekStateful<T, S> extends FluxSource<T, T> implements SignalPee
 
 	final Consumer<S> onCancelCall;
 
-	public FluxPeekStateful(Publisher<? extends T> source,
+	FluxPeekStateful(Flux<? extends T> source,
 			Supplier<S> stateSeeder,
 			BiConsumer<? super Subscription, S> onSubscribeCall,
 			BiConsumer<? super T, S> onNextCall,
@@ -79,13 +78,13 @@ final class FluxPeekStateful<T, S> extends FluxSource<T, T> implements SignalPee
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super T> s) {
+	public void subscribe(Subscriber<? super T> s, Context ctx) {
 		//TODO fuseable version?
 		//TODO conditional version?
-		source.subscribe(new PeekStatefulSubscriber<>(s, this, stateSeeder.get()));
+		source.subscribe(new PeekStatefulSubscriber<>(s, this, stateSeeder.get()), ctx);
 	}
 
-	static final class PeekStatefulSubscriber<T, S> implements Subscriber<T>, Subscription, Receiver, Producer {
+	static final class PeekStatefulSubscriber<T, S> implements InnerOperator<T, T> {
 
 		final Subscriber<? super T> actual;
 
@@ -97,11 +96,22 @@ final class FluxPeekStateful<T, S> extends FluxSource<T, T> implements SignalPee
 
 		boolean done;
 
-		public PeekStatefulSubscriber(Subscriber<? super T> actual,
+		PeekStatefulSubscriber(Subscriber<? super T> actual,
 				SignalPeekStateful<T, S> parent, S state) {
 			this.actual = actual;
 			this.parent = parent;
 			this.state = state;
+		}
+
+		@Override
+		public Object scan(Attr key) {
+			switch (key) {
+				case PARENT:
+					return s;
+				case TERMINATED:
+					return done;
+			}
+			return InnerOperator.super.scan(key);
 		}
 
 		@Override
@@ -239,14 +249,10 @@ final class FluxPeekStateful<T, S> extends FluxSource<T, T> implements SignalPee
 		}
 
 		@Override
-		public Object downstream() {
+		public Subscriber<? super T> actual() {
 			return actual;
 		}
 
-		@Override
-		public Object upstream() {
-			return s;
-		}
 	}
 
 	@Override

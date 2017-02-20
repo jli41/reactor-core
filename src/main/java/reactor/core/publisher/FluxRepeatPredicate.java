@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@ import java.util.function.BooleanSupplier;
 
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
+import reactor.util.context.Context;
 
 /**
  * Repeatedly subscribes to the source if the predicate returns true after
@@ -29,19 +30,20 @@ import org.reactivestreams.Subscriber;
  * @param <T> the value type
  * @see <a href="https://github.com/reactor/reactive-streams-commons">Reactive-Streams-Commons</a>
  */
-final class FluxRepeatPredicate<T> extends FluxSource<T, T> {
+final class FluxRepeatPredicate<T> extends FluxOperator<T, T> {
 
 	final BooleanSupplier predicate;
 
-	public FluxRepeatPredicate(Publisher<? extends T> source, BooleanSupplier predicate) {
+	FluxRepeatPredicate(ContextualPublisher<? extends T> source, BooleanSupplier predicate) {
 		super(source);
 		this.predicate = Objects.requireNonNull(predicate, "predicate");
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super T> s) {
+	public void subscribe(Subscriber<? super T> s, Context ctx) {
 
-		RepeatPredicateSubscriber<T> parent = new RepeatPredicateSubscriber<>(source, s, predicate);
+		RepeatPredicateSubscriber<T> parent = new RepeatPredicateSubscriber<>(source,
+				s, predicate, ctx);
 
 		s.onSubscribe(parent);
 
@@ -64,9 +66,9 @@ final class FluxRepeatPredicate<T> extends FluxSource<T, T> {
 
 		long produced;
 
-		public RepeatPredicateSubscriber(Publisher<? extends T> source, 
-				Subscriber<? super T> actual, BooleanSupplier predicate) {
-			super(actual);
+		RepeatPredicateSubscriber(Publisher<? extends T> source,
+				Subscriber<? super T> actual, BooleanSupplier predicate, Context ctx) {
+			super(actual, ctx);
 			this.source = source;
 			this.predicate = predicate;
 		}
@@ -75,7 +77,7 @@ final class FluxRepeatPredicate<T> extends FluxSource<T, T> {
 		public void onNext(T t) {
 			produced++;
 
-			subscriber.onNext(t);
+			actual.onNext(t);
 		}
 
 		@Override
@@ -85,14 +87,14 @@ final class FluxRepeatPredicate<T> extends FluxSource<T, T> {
 			try {
 				b = predicate.getAsBoolean();
 			} catch (Throwable e) {
-				subscriber.onError(Operators.onOperatorError(e));
+				actual.onError(Operators.onOperatorError(e));
 				return;
 			}
 			
 			if (b) {
 				resubscribe();
 			} else {
-				subscriber.onComplete();
+				actual.onComplete();
 			}
 		}
 

@@ -44,6 +44,7 @@ import reactor.core.scheduler.Scheduler;
 import reactor.core.scheduler.Schedulers;
 import reactor.util.Logger;
 import reactor.util.concurrent.QueueSupplier;
+import reactor.util.context.Context;
 import reactor.util.function.Tuple2;
 import reactor.util.function.Tuple3;
 import reactor.util.function.Tuple4;
@@ -80,7 +81,7 @@ import reactor.util.function.Tuples;
  *
  * @see Flux
  */
-public abstract class Mono<T> implements Publisher<T> {
+public abstract class Mono<T> implements ContextualPublisher<T> {
 
 //	 ==============================================================================================================
 //	 Static Generators
@@ -276,7 +277,7 @@ public abstract class Mono<T> implements Publisher<T> {
 	 */
 	public static <T> Mono<Void> empty(Publisher<T> source) {
 		@SuppressWarnings("unchecked")
-		Mono<Void> then = (Mono<Void>)new MonoIgnoreEmpty<>(source);
+		Mono<Void> then = (Mono<Void>)new MonoIgnoreEmpty<>(Operators.contextual(source));
 		return onAssembly(then);
 	}
 
@@ -328,7 +329,7 @@ public abstract class Mono<T> implements Publisher<T> {
 
 	/**
 	 * Expose the specified {@link Publisher} with the {@link Mono} API, and ensure it will emit 0 or 1 item.
-	 *
+	 * The source emitter will be cancelled on the first `onNext`.
 	 * <p>
 	 * <img class="marble" src="https://raw.githubusercontent.com/reactor/reactor-core/v3.0.5.RELEASE/src/docs/marble/from1.png" alt="">
 	 * <p>
@@ -351,7 +352,7 @@ public abstract class Mono<T> implements Publisher<T> {
             }
 			return empty();
 		}
-		return onAssembly(new MonoNext<>(source));
+		return onAssembly(new MonoNext<>(Operators.contextual(source)));
 	}
 
 	/**
@@ -382,6 +383,21 @@ public abstract class Mono<T> implements Publisher<T> {
 	 */
 	public static <T> Mono<T> fromCompletionStage(CompletionStage<? extends T> completionStage) {
 		return onAssembly(new MonoCompletionStage<>(completionStage));
+	}
+
+	/**
+	 * Unchecked cardinality conversion of {@link Publisher} as {@link Mono}, supporting
+	 * {@link Fuseable} sources.
+	 *
+	 * @param source the {@link Publisher} to wrap
+	 * @param <I> input upstream type
+	 * @return a wrapped {@link Mono}
+	 */
+	public static <I> Mono<I> fromDirect(Publisher<? extends I> source){
+		if(source instanceof Fuseable){
+			return new MonoSource.FuseableMonoSource<>(source);
+		}
+		return new MonoSource<>(source);
 	}
 
 	/**
@@ -443,7 +459,7 @@ public abstract class Mono<T> implements Publisher<T> {
 	 * @return a new completable {@link Mono}.
 	 */
 	public static <T> Mono<T> ignoreElements(Publisher<T> source) {
-		return onAssembly(new MonoIgnoreEmpty<>(source));
+		return onAssembly(new MonoIgnoreEmpty<>(Operators.contextual(source)));
 	}
 
 
@@ -1438,6 +1454,39 @@ public abstract class Mono<T> implements Publisher<T> {
 	}
 
 	/**
+	 * Propagate a new {@link Context} given an eventual older parent {@link Context}.
+	 * If the returned {@link Context} is empty, the propagation will be halted.
+	 * <p>
+	 *     Lifecycle for {@link Context} propagation is as such :
+	 *     <ul>
+	 *     <li> #1 During right-to-left subscribe(Subscriber) phase, contextualize will
+	 *     read
+	 *     the target {@link Subscriber} context if any and cache it.</li>
+	 *     <li> #2-A Before left-to-right onSubscribe(Subscription), {@link Context}
+	 *     might be propagated from parent. If this happens, the given
+	 *     {@link BiFunction} will be invoked with the cached {@link Context} and the
+	 *     propagating {@link Context}
+	 *     </li>
+	 *     <li> #2-B If no context was propagated before left-to-right onSubscribe
+	 *     (Subscription) phase, contextualize will
+	 *     call the given {@link BiFunction} during onSubscribe(Subscription) with the
+	 *     cached
+	 *     {@link Context} and an empty one. Thus contextualize
+	 *     will first propagate the resulting {@link Context} if non empty before
+	 *     the downstream actual {@code Subscriber#onSubscribe(Subscription)}</li>
+	 *     </ul>
+	 *
+	 * @param doOnContext the bifunction taking a previous {@link Context} state
+	 *  and a candidate new one to propagate.
+	 *
+	 * @return a contextualized {@link Mono}
+	 */
+	public final Mono<T> contextualize(BiFunction<Context, Context, Context> doOnContext) {
+		return new MonoContextualize<>(this, doOnContext);
+	}
+
+
+	/**
 	 * Provide a default unique value if this mono is completed without any data
 	 *
 	 * <p>
@@ -1684,14 +1733,10 @@ public abstract class Mono<T> implements Publisher<T> {
 	 */
 	public final Mono<T> doFinally(Consumer<SignalType> onFinally) {
 		Objects.requireNonNull(onFinally, "onFinally");
-		Mono<T> monoDoFinally;
 		if (this instanceof Fuseable) {
-			monoDoFinally = new MonoDoFinallyFuseable<>(this, onFinally);
+			return onAssembly(new MonoDoFinallyFuseable<>(this, onFinally));
 		}
-		else {
-			monoDoFinally = new MonoDoFinally<>(this, onFinally);
-		}
-		return onAssembly(monoDoFinally);
+		return onAssembly(new MonoDoFinally<>(this, onFinally));
 	}
 
 	/**
@@ -2162,14 +2207,10 @@ public abstract class Mono<T> implements Publisher<T> {
 		SignalLogger<T> log = new SignalLogger<>(this, category, level,
 				showOperatorLine, options);
 
-		return doOnSignal(this,
-				log.onSubscribeCall(),
-				log.onNextCall(),
-				log.onErrorCall(),
-				log.onCompleteCall(),
-				log.onAfterTerminateCall(),
-				log.onRequestCall(),
-				log.onCancelCall());
+		if (this instanceof Fuseable) {
+			return onAssembly(new MonoLogFuseable<>(this, log));
+		}
+		return onAssembly(new MonoLog<>(this, log));
 	}
 
 	/**
@@ -2251,7 +2292,7 @@ public abstract class Mono<T> implements Publisher<T> {
 	 * @return a {@link Mono} of materialized {@link Signal}
 	 */
 	public final Mono<Signal<T>> materialize() {
-		return onAssembly(new FluxMaterialize<>(this).next());
+		return onAssembly(new MonoMaterialize<>(this));
 	}
 
 	/**
@@ -2824,6 +2865,12 @@ public abstract class Mono<T> implements Publisher<T> {
 				completeConsumer, subscriptionConsumer));
 	}
 
+//	@Override
+//	public void subscribe(Subscriber<? super T> actual, Context context) {
+//		throw new UnsupportedOperationException("#subscribe(Subscriber) or #subscribe" +
+//				"(Subscriber, Context) must be implemented by the enclosing Mono");
+//	}
+
 	/**
 	 * Run the requests to this Publisher {@link Mono} on a given worker assigned by the supplied {@link Scheduler}.
 	 * <p>
@@ -3241,7 +3288,7 @@ public abstract class Mono<T> implements Publisher<T> {
 	 */
 	@SuppressWarnings("unchecked")
 	protected static <T> Mono<T> onAssembly(Mono<T> source) {
-		Hooks.OnOperatorCreate hook = Hooks.onOperatorCreate;
+		Hooks.OnOperatorHook hook = Hooks.onOperatorHook;
 		if(hook == null) {
 			return source;
 		}
@@ -3254,7 +3301,7 @@ public abstract class Mono<T> implements Publisher<T> {
 	}
 
 	@SuppressWarnings("unchecked")
-	static <T> Mono<T> doOnSignal(Publisher<T> source,
+	static <T> Mono<T> doOnSignal(Mono<T> source,
 			Consumer<? super Subscription> onSubscribe,
 			Consumer<? super T> onNext,
 			Consumer<? super Throwable> onError,

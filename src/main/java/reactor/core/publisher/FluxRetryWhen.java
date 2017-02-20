@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,11 +18,14 @@ package reactor.core.publisher;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 import java.util.function.Function;
+import java.util.stream.Stream;
 
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
-import reactor.core.Loopback;
+import reactor.core.Scannable;
+import reactor.util.context.Context;
+import reactor.util.context.ContextRelay;
 
 /**
  * retries a source when a companion sequence signals
@@ -34,11 +37,11 @@ import reactor.core.Loopback;
  * @param <T> the source value type
  * @see <a href="https://github.com/reactor/reactive-streams-commons">Reactive-Streams-Commons</a>
  */
-final class FluxRetryWhen<T> extends FluxSource<T, T> {
+final class FluxRetryWhen<T> extends FluxOperator<T, T> {
 
 	final Function<? super Flux<Throwable>, ? extends Publisher<?>> whenSourceFactory;
 
-	public FluxRetryWhen(Publisher<? extends T> source,
+	FluxRetryWhen(Flux<? extends T> source,
 							  Function<? super Flux<Throwable>, ? extends Publisher<?>> whenSourceFactory) {
 		super(source);
 		this.whenSourceFactory = Objects.requireNonNull(whenSourceFactory, "whenSourceFactory");
@@ -47,7 +50,7 @@ final class FluxRetryWhen<T> extends FluxSource<T, T> {
 	static <T> void subscribe(Subscriber<? super T> s, Function<? super
 			Flux<Throwable>, ?
 			extends Publisher<?>> whenSourceFactory, Publisher<? extends
-			T> source) {
+			T> source, Context ctx) {
 		RetryWhenOtherSubscriber other = new RetryWhenOtherSubscriber();
 		Subscriber<Throwable> signaller = Operators.serialize(other.completionSignal);
 
@@ -56,7 +59,7 @@ final class FluxRetryWhen<T> extends FluxSource<T, T> {
 		Subscriber<T> serial = Operators.serialize(s);
 
 		RetryWhenMainSubscriber<T> main =
-				new RetryWhenMainSubscriber<>(serial, signaller, source);
+				new RetryWhenMainSubscriber<>(serial, signaller, source, ctx);
 		other.main = main;
 
 		serial.onSubscribe(main);
@@ -80,8 +83,8 @@ final class FluxRetryWhen<T> extends FluxSource<T, T> {
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super T> s) {
-		subscribe(s, whenSourceFactory, source);
+	public void subscribe(Subscriber<? super T> s, Context ctx) {
+		subscribe(s, whenSourceFactory, source, ctx);
 	}
 
 	static final class RetryWhenMainSubscriber<T> extends
@@ -102,12 +105,25 @@ final class FluxRetryWhen<T> extends FluxSource<T, T> {
 
 		long produced;
 		
-		public RetryWhenMainSubscriber(Subscriber<? super T> actual, Subscriber<Throwable> signaller,
-												Publisher<? extends T> source) {
-			super(actual);
+		RetryWhenMainSubscriber(Subscriber<? super T> actual, Subscriber<Throwable> signaller,
+												Publisher<? extends T> source, Context ctx) {
+			super(actual, ctx);
 			this.signaller = signaller;
 			this.source = source;
 			this.otherArbiter = new Operators.DeferredSubscription();
+		}
+
+		@Override
+		public Object scan(Attr key) {
+			if (key == Attr.CANCELLED) {
+				return cancelled;
+			}
+			return super.scan(key);
+		}
+
+		@Override
+		public Stream<? extends Scannable> inners() {
+			return Stream.of(Scannable.from(signaller), otherArbiter);
 		}
 
 		@Override
@@ -132,7 +148,7 @@ final class FluxRetryWhen<T> extends FluxSource<T, T> {
 
 		@Override
 		public void onNext(T t) {
-			subscriber.onNext(t);
+			actual.onNext(t);
 
 			produced++;
 		}
@@ -154,7 +170,7 @@ final class FluxRetryWhen<T> extends FluxSource<T, T> {
 		public void onComplete() {
 			otherArbiter.cancel();
 
-			subscriber.onComplete();
+			actual.onComplete();
 		}
 
 		void resubscribe() {
@@ -174,22 +190,40 @@ final class FluxRetryWhen<T> extends FluxSource<T, T> {
 			cancelled = true;
 			super.cancel();
 
-			subscriber.onError(e);
+			actual.onError(e);
 		}
 
 		void whenComplete() {
 			cancelled = true;
 			super.cancel();
 
-			subscriber.onComplete();
+			actual.onComplete();
 		}
 	}
 
 	static final class RetryWhenOtherSubscriber extends Flux<Throwable>
-	implements Subscriber<Object>, Loopback {
+	implements InnerConsumer<Object> {
 		RetryWhenMainSubscriber<?> main;
 
 		final DirectProcessor<Throwable> completionSignal = new DirectProcessor<>();
+
+		@Override
+		public Context currentContext() {
+			return main.context;
+		}
+
+		@Override
+		public Object scan(Attr key) {
+			switch (key){
+				case CANCELLED:
+					return main.otherArbiter == Operators.cancelledSubscription();
+				case PARENT:
+					return main.otherArbiter;
+				case ACTUAL:
+					return main;
+			}
+			return null;
+		}
 
 		@Override
 		public void onSubscribe(Subscription s) {
@@ -212,18 +246,9 @@ final class FluxRetryWhen<T> extends FluxSource<T, T> {
 		}
 
 		@Override
-		public void subscribe(Subscriber<? super Throwable> s) {
+		public void subscribe(Subscriber<? super Throwable> s, Context ctx) {
+			ContextRelay.set(s, main.context);
 			completionSignal.subscribe(s);
-		}
-
-		@Override
-		public Object connectedInput() {
-			return main;
-		}
-
-		@Override
-		public Object connectedOutput() {
-			return completionSignal;
 		}
 	}
 }

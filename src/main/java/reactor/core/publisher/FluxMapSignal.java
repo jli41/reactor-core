@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,12 +23,9 @@ import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
-import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
-import reactor.core.Producer;
-import reactor.core.Receiver;
-import reactor.core.Trackable;
+import reactor.util.context.Context;
 
 /**
  * Maps the values of the source publisher one-on-one via a mapper function.
@@ -37,7 +34,7 @@ import reactor.core.Trackable;
  * @param <R> the result value type
  * @author Stephane Maldini
  */
-final class FluxMapSignal<T, R> extends FluxSource<T, R> {
+final class FluxMapSignal<T, R> extends FluxOperator<T, R> {
 
     final Function<? super T, ? extends R> mapperNext;
     final Function<Throwable, ? extends R> mapperError;
@@ -53,7 +50,7 @@ final class FluxMapSignal<T, R> extends FluxSource<T, R> {
      *
      * @throws NullPointerException if either {@code source} or {@code mapper} is null.
      */
-    FluxMapSignal(Publisher<? extends T> source,
+    FluxMapSignal(ContextualPublisher<? extends T> source,
             Function<? super T, ? extends R> mapperNext,
             Function<Throwable, ? extends R> mapperError,
             Supplier<? extends R>            mapperComplete) {
@@ -68,14 +65,14 @@ final class FluxMapSignal<T, R> extends FluxSource<T, R> {
     }
 
     @Override
-    public void subscribe(Subscriber<? super R> s) {
-        source.subscribe(new FluxMapSignalSubscriber<>(s, this));
+    public void subscribe(Subscriber<? super R> s, Context ctx) {
+        source.subscribe(new FluxMapSignalSubscriber<>(s, this), ctx);
     }
 
     static final class FluxMapSignalSubscriber<T, R> 
     extends AbstractQueue<R>
-    implements Subscriber<T>, Receiver, Producer, Trackable, Subscription,
-               BooleanSupplier {
+		    implements InnerOperator<T, R>,
+		               BooleanSupplier {
 
         final Subscriber<? super R>            actual;
         final FluxMapSignal<T, R> parent;
@@ -169,7 +166,7 @@ final class FluxMapSignal<T, R> extends FluxSource<T, R> {
 	        value = v;
             long p = produced;
             if (p != 0L) {
-                REQUESTED.addAndGet(this, -p);
+	            Operators.addAndGet(REQUESTED, this, -p);
             }
 	        DrainUtils.postComplete(actual, this, REQUESTED, this, this);
         }
@@ -201,29 +198,14 @@ final class FluxMapSignal<T, R> extends FluxSource<T, R> {
             value = v;
             long p = produced;
             if (p != 0L) {
-                REQUESTED.addAndGet(this, -p);
+	            Operators.addAndGet(REQUESTED, this, -p);
             }
             DrainUtils.postComplete(actual, this, REQUESTED, this, this);
         }
 
         @Override
-        public boolean isStarted() {
-            return s != null && !done;
-        }
-
-        @Override
-        public boolean isTerminated() {
-            return done;
-        }
-
-        @Override
-        public Object downstream() {
+        public Subscriber<? super R> actual() {
             return actual;
-        }
-
-        @Override
-        public Object upstream() {
-            return s;
         }
 
 	    @Override
@@ -251,8 +233,20 @@ final class FluxMapSignal<T, R> extends FluxSource<T, R> {
         }
 
 	    @Override
-	    public boolean isCancelled() {
-		    return cancelled;
+	    public Object scan(Attr key) {
+		    switch (key) {
+			    case PARENT:
+				    return s;
+			    case TERMINATED:
+				    return done;
+			    case CANCELLED:
+			    	return getAsBoolean();
+			    case REQUESTED_FROM_DOWNSTREAM:
+			    	return requested;
+			    case BUFFERED:
+			    	return size();
+		    }
+		    return InnerOperator.super.scan(key);
 	    }
 
 	    @Override

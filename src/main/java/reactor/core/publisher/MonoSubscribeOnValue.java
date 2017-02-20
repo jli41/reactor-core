@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,6 +22,7 @@ import org.reactivestreams.Subscriber;
 import reactor.core.Cancellation;
 import reactor.core.publisher.FluxSubscribeOnValue.*;
 import reactor.core.scheduler.Scheduler;
+import reactor.util.context.Context;
 
 /**
  * Mono indicating a scalar/empty source that subscribes on the specified scheduler.
@@ -41,7 +42,7 @@ final class MonoSubscribeOnValue<T> extends Mono<T> {
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super T> s) {
+	public void subscribe(Subscriber<? super T> s, Context context) {
 		T v = value;
 		if (v == null) {
 			ScheduledEmpty parent = new ScheduledEmpty(s);

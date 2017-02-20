@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,11 +20,10 @@ import java.util.Objects;
 import java.util.function.BiFunction;
 import java.util.function.Supplier;
 
-import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
 import reactor.core.Fuseable;
-import reactor.core.Receiver;
+import reactor.util.context.Context;
 
 /**
  * Aggregates the source values with the help of an accumulator
@@ -35,13 +34,13 @@ import reactor.core.Receiver;
  *
  * @see <a href="https://github.com/reactor/reactive-streams-commons">Reactive-Streams-Commons</a>
  */
-final class MonoReduceSeed<T, R> extends MonoSource<T, R> implements Fuseable {
+final class MonoReduceSeed<T, R> extends MonoOperator<T, R> implements Fuseable {
 
 	final Supplier<R> initialSupplier;
 
 	final BiFunction<R, ? super T, R> accumulator;
 
-	MonoReduceSeed(Publisher<? extends T> source,
+	MonoReduceSeed(Flux<? extends T> source,
 			Supplier<R> initialSupplier,
 			BiFunction<R, ? super T, R> accumulator) {
 		super(source);
@@ -50,7 +49,7 @@ final class MonoReduceSeed<T, R> extends MonoSource<T, R> implements Fuseable {
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super R> s) {
+	public void subscribe(Subscriber<? super R> s, Context ctx) {
 		R initialValue;
 
 		try {
@@ -62,11 +61,10 @@ final class MonoReduceSeed<T, R> extends MonoSource<T, R> implements Fuseable {
 			return;
 		}
 
-		source.subscribe(new ReduceSeedSubscriber<>(s, accumulator, initialValue));
+		source.subscribe(new ReduceSeedSubscriber<>(s, accumulator, initialValue), ctx);
 	}
 
-	static final class ReduceSeedSubscriber<T, R> extends Operators.MonoSubscriber<T, R>
-			implements Receiver {
+	static final class ReduceSeedSubscriber<T, R> extends Operators.MonoSubscriber<T, R>  {
 
 		final BiFunction<R, ? super T, R> accumulator;
 
@@ -80,6 +78,17 @@ final class MonoReduceSeed<T, R> extends MonoSource<T, R> implements Fuseable {
 			super(actual);
 			this.accumulator = accumulator;
 			this.value = value;
+		}
+
+		@Override
+		public Object scan(Attr key) {
+			switch (key){
+				case TERMINATED:
+					return done;
+				case PARENT:
+					return s;
+			}
+			return super.scan(key);
 		}
 
 		@Override
@@ -140,21 +149,6 @@ final class MonoReduceSeed<T, R> extends MonoSource<T, R> implements Fuseable {
 			done = true;
 
 			complete(value);
-		}
-
-		@Override
-		public boolean isStarted() {
-			return s != null && !isTerminated();
-		}
-
-		@Override
-		public boolean isTerminated() {
-			return done;
-		}
-
-		@Override
-		public Object upstream() {
-			return s;
 		}
 	}
 }

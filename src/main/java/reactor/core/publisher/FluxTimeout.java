@@ -1,3 +1,18 @@
+/*
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package reactor.core.publisher;
 
 import java.util.Objects;
@@ -9,6 +24,7 @@ import java.util.function.Function;
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
+import reactor.util.context.Context;
 
 /**
  * Signals a timeout (or switches to another sequence) in case a per-item
@@ -21,7 +37,7 @@ import org.reactivestreams.Subscription;
  *
  * @see <a href="https://github.com/reactor/reactive-streams-commons">Reactive-Streams-Commons</a>
  */
-final class FluxTimeout<T, U, V> extends FluxSource<T, T> {
+final class FluxTimeout<T, U, V> extends FluxOperator<T, T> {
 
 	final Publisher<U> firstTimeout;
 
@@ -29,7 +45,7 @@ final class FluxTimeout<T, U, V> extends FluxSource<T, T> {
 
 	final Publisher<? extends T> other;
 
-	FluxTimeout(Publisher<? extends T> source,
+	FluxTimeout(Flux<? extends T> source,
 			Publisher<U> firstTimeout,
 			Function<? super T, ? extends Publisher<V>> itemTimeout) {
 		super(source);
@@ -38,7 +54,7 @@ final class FluxTimeout<T, U, V> extends FluxSource<T, T> {
 		this.other = null;
 	}
 
-	FluxTimeout(Publisher<? extends T> source,
+	FluxTimeout(Flux<? extends T> source,
 			Publisher<U> firstTimeout,
 			Function<? super T, ? extends Publisher<V>> itemTimeout,
 			Publisher<? extends T> other) {
@@ -49,12 +65,11 @@ final class FluxTimeout<T, U, V> extends FluxSource<T, T> {
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super T> s) {
-
+	public void subscribe(Subscriber<? super T> s, Context ctx) {
 		Subscriber<T> serial = Operators.serialize(s);
 
 		TimeoutMainSubscriber<T, V> main =
-				new TimeoutMainSubscriber<>(serial, itemTimeout, other);
+				new TimeoutMainSubscriber<>(serial, itemTimeout, other, ctx);
 
 		serial.onSubscribe(main);
 
@@ -64,7 +79,7 @@ final class FluxTimeout<T, U, V> extends FluxSource<T, T> {
 
 		firstTimeout.subscribe(ts);
 
-		source.subscribe(main);
+		source.subscribe(main, ctx);
 	}
 
 	static final class TimeoutMainSubscriber<T, V>
@@ -91,8 +106,8 @@ final class FluxTimeout<T, U, V> extends FluxSource<T, T> {
 
 		TimeoutMainSubscriber(Subscriber<? super T> actual,
 				Function<? super T, ? extends Publisher<V>> itemTimeout,
-				Publisher<? extends T> other) {
-			super(actual);
+				Publisher<? extends T> other, Context ctx) {
+			super(actual, ctx);
 			this.itemTimeout = itemTimeout;
 			this.other = other;
 		}
@@ -127,7 +142,7 @@ final class FluxTimeout<T, U, V> extends FluxSource<T, T> {
 				return;
 			}
 
-			subscriber.onNext(t);
+			actual.onNext(t);
 
 			producedOne();
 
@@ -138,7 +153,7 @@ final class FluxTimeout<T, U, V> extends FluxSource<T, T> {
 						"The itemTimeout returned a null Publisher");
 			}
 			catch (Throwable e) {
-				subscriber.onError(Operators.onOperatorError(this, e, t));
+				actual.onError(Operators.onOperatorError(this, e, t));
 				return;
 			}
 
@@ -165,7 +180,7 @@ final class FluxTimeout<T, U, V> extends FluxSource<T, T> {
 
 			cancelTimeout();
 
-			subscriber.onError(t);
+			actual.onError(t);
 		}
 
 		@Override
@@ -180,7 +195,7 @@ final class FluxTimeout<T, U, V> extends FluxSource<T, T> {
 
 			cancelTimeout();
 
-			subscriber.onComplete();
+			actual.onComplete();
 		}
 
 		void cancelTimeout() {
@@ -234,7 +249,7 @@ final class FluxTimeout<T, U, V> extends FluxSource<T, T> {
 			if (index == i && INDEX.compareAndSet(this, i, Long.MIN_VALUE)) {
 				super.cancel();
 
-				subscriber.onError(e);
+				actual.onError(e);
 			}
 		}
 
@@ -242,12 +257,12 @@ final class FluxTimeout<T, U, V> extends FluxSource<T, T> {
 			if (other == null) {
 				super.cancel();
 
-				subscriber.onError(new TimeoutException());
+				actual.onError(new TimeoutException());
 			}
 			else {
 				set(Operators.emptySubscription());
 
-				other.subscribe(new TimeoutOtherSubscriber<>(subscriber, this));
+				other.subscribe(new TimeoutOtherSubscriber<>(actual, this));
 			}
 		}
 	}

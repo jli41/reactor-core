@@ -30,6 +30,7 @@ import org.reactivestreams.Subscription;
 import reactor.core.Fuseable;
 import reactor.util.Logger;
 import reactor.util.Loggers;
+import reactor.util.context.Context;
 
 /**
  * Allows for various lifecycle override
@@ -70,15 +71,16 @@ public abstract class Hooks {
 	 * <p>
 	 * Can be reset via {@link #resetOnOperator()}
 	 *
-	 * @param newHook a callback for each assembly that must return a {@link SignalPeek}
+	 * @param onOperator a callback for each assembly that must return an
+	 * {@link OperatorHook} query
 	 * @param <T> the arbitrary assembled sequence type
 	 */
-	public static <T> void onOperator(Function<? super OperatorHook<T>, ? extends OperatorHook<T>>
-			newHook) {
+	public static <T> void onOperator(Function<? super OperatorHook<T>, ? extends OperatorHook<T>> onOperator) {
 		if(log.isDebugEnabled()) {
 			log.debug("Hooking new default : onOperator");
 		}
-		onOperatorCreate = new OnOperatorCreate<>(newHook);
+		onOperatorHook =
+				new OnOperatorHook<>(Objects.requireNonNull(onOperator, "onOperator"));
 	}
 
 	/**
@@ -94,6 +96,27 @@ public abstract class Hooks {
 			log.debug("Hooking new default : onOperatorError");
 		}
 		onOperatorErrorHook = Objects.requireNonNull(f, "onOperatorErrorHook");
+	}
+
+	/**
+	 * Set a global "assembly" hook to intercept signals produced by the passed
+	 * terminating {@link Subscriber}. The passed
+	 * function must result in a
+	 * value different from null.
+	 * <p>
+	 * Can be reset via {@link #resetOnSubscriber()} ()}
+	 *
+	 * @param onSubscriber a callback for each terminal {@link Publisher#subscribe(Subscriber)}
+	 * @param <T> the arbitrary assembled sequence type
+	 */
+	public static <T> void onSubscriber(BiFunction<? super Subscriber<? super T>, ? super Context, ? extends Subscriber<? super T>> onSubscriber) {
+		if (log.isDebugEnabled()) {
+			log.debug("Hooking new default : onSubscriber");
+		}
+		@SuppressWarnings("unchecked") BiFunction<? super Subscriber<?>, ? super Context, ? extends Subscriber<?>>
+				_onSubscriberHook =
+				(BiFunction<? super Subscriber<?>, ? super Context, ? extends Subscriber<?>>) onSubscriber;
+		onSubscriberHook = _onSubscriberHook;
 	}
 
 	/**
@@ -124,7 +147,17 @@ public abstract class Hooks {
 		if(log.isDebugEnabled()) {
 			log.debug("Reset to factory defaults : onOperator");
 		}
-		onOperatorCreate = null;
+		onOperatorHook = null;
+	}
+
+	/**
+	 * Reset global "assembly" hook tracking
+	 */
+	public static void resetOnSubscriber() {
+		if (log.isDebugEnabled()) {
+			log.debug("Reset to factory defaults : onSubscriber");
+		}
+		onSubscriberHook = null;
 	}
 
 	/**
@@ -159,11 +192,13 @@ public abstract class Hooks {
 		public final OperatorHook<T> doOnEach(
 				Consumer<? super T> onNextCall,
 				Consumer<? super Throwable> onErrorCall,
-				Runnable onCompleteCall,
-				Runnable onAfterTerminateCall
-		){
-			return doOnSignal(null, onNextCall, onErrorCall, onCompleteCall,
-					onAfterTerminateCall, null, null);
+				Runnable onCompleteCall, Runnable onAfterTerminateCall) {
+			return doOnSignal(new FluxPeek<>(Flux.never(),
+					null,
+					onNextCall,
+					onErrorCall,
+					onCompleteCall,
+					onAfterTerminateCall, null, null));
 		}
 
 		/**
@@ -178,58 +213,42 @@ public abstract class Hooks {
 		 */
 		public final OperatorHook<T> doOnLifecycle(
 				Consumer<? super Subscription> onSubscribeCall,
-				LongConsumer onRequestCall,
-				Runnable onCancelCall
-		){
-			return doOnSignal(onSubscribeCall, null, null, null,
-					null, onRequestCall, onCancelCall);
+				LongConsumer onRequestCall, Runnable onCancelCall) {
+			return doOnSignal(new FluxPeek<>(Flux.never(),
+					onSubscribeCall,
+					null,
+					null,
+					null,
+					null, onRequestCall, onCancelCall));
 		}
 
 		final OperatorHook<T> doOnSignal(
-				Consumer<? super Subscription> onSubscribeCall,
-				Consumer<? super T> onNextCall,
-				Consumer<? super Throwable> onErrorCall,
-				Runnable onCompleteCall,
-				Runnable onAfterTerminateCall,
-				LongConsumer onRequestCall,
-				Runnable onCancelCall
+				SignalPeek<T> log
 		){
 			if(this == IGNORE || publisher instanceof ConnectableFlux){
 				return this;
 			}
 			if (publisher instanceof Mono) {
 				if (publisher instanceof Fuseable) {
-					return new OperatorHook<>(new MonoPeekFuseable<>(publisher,
-							onSubscribeCall, onNextCall, onErrorCall, onCompleteCall,
-							onAfterTerminateCall, onRequestCall, onCancelCall),
+					return new OperatorHook<>(new MonoLogFuseable<>((Mono)publisher, log),
 							traced, tracedCategory, tracedLevel, tracedSignals);
 				}
 				else {
-					return new OperatorHook<>(new MonoPeek<>(publisher,
-							onSubscribeCall, onNextCall, onErrorCall, onCompleteCall,
-							onAfterTerminateCall, onRequestCall, onCancelCall), traced
+					return new OperatorHook<>(new MonoLog<>((Mono)publisher, log), traced
 							, tracedCategory, tracedLevel, tracedSignals);
 				}
 			}
-			else if (publisher instanceof ParallelFlux){
-				Publisher<T> _p = new ParallelPeek<>((ParallelFlux<T>) publisher,
-						onNextCall, null, onErrorCall, onCompleteCall,
-						onAfterTerminateCall, onSubscribeCall, onRequestCall,
-						onCancelCall);
-
-				return new OperatorHook<>(_p, traced
+			else if (publisher instanceof ParallelFlux) {
+				return new OperatorHook<>(new ParallelLog<>((ParallelFlux<T>) publisher, log), traced
 						, tracedCategory, tracedLevel, tracedSignals);
 			}
 			else if (publisher instanceof Fuseable) {
-				return new OperatorHook<>(new FluxPeekFuseable<>(publisher,
-						onSubscribeCall, onNextCall, onErrorCall, onCompleteCall,
-						onAfterTerminateCall, onRequestCall, onCancelCall), traced
-						, tracedCategory, tracedLevel, tracedSignals);
+				return new OperatorHook<>(new FluxLogFuseable<>((Flux<T>)publisher, log), traced
+						, tracedCategory, tracedLevel,
+						tracedSignals);
 			}
 			else {
-				return new OperatorHook<>(new FluxPeek<>(publisher,
-						onSubscribeCall, onNextCall, onErrorCall, onCompleteCall,
-						onAfterTerminateCall, onRequestCall, onCancelCall), traced
+				return new OperatorHook<>(new FluxLog<>((Flux<T>)publisher,log), traced
 						, tracedCategory, tracedLevel, tracedSignals);
 			}
 		}
@@ -390,11 +409,8 @@ public abstract class Hooks {
 		 */
 		public OperatorHook<T> log(String category, Level level, SignalType... options){
 			Objects.requireNonNull(level, "level");
-			SignalLogger peek = new SignalLogger<>(publisher, category, level, false,
-					options);
-			return doOnSignal(peek.onSubscribeCall(), peek.onNextCall(), peek
-							.onErrorCall(), peek.onCompleteCall(), peek.onAfterTerminateCall(),
-					peek.onRequestCall(), peek.onCancelCall());
+			return doOnSignal(new SignalLogger<>(publisher, category, level, false,
+					options));
 		}
 
 		/**
@@ -482,7 +498,9 @@ public abstract class Hooks {
 		}
 	}
 
-	static volatile OnOperatorCreate<?>         onOperatorCreate;
+	static volatile OnOperatorHook<?>           onOperatorHook;
+	static volatile BiFunction<? super Subscriber<?>, ? super Context, ? extends Subscriber<?>>
+	                                            onSubscriberHook;
 	static volatile Consumer<? super Throwable> onErrorDroppedHook;
 	static volatile Consumer<Object>            onNextDroppedHook;
 	static volatile BiFunction<? super Throwable, Object, ? extends Throwable>
@@ -494,19 +512,19 @@ public abstract class Hooks {
 						"false"));
 
 		if (globalTrace) {
-			onOperatorCreate = new OnOperatorCreate<>(OperatorHook::operatorStacktrace);
+			onOperatorHook = new OnOperatorHook<>(OperatorHook::operatorStacktrace);
 		}
 	}
 
 	Hooks() {
 	}
 
-	final static class OnOperatorCreate<T>
+	final static class OnOperatorHook<T>
 			implements Function<Publisher<T>, Publisher<T>> {
 
 		final Function<? super OperatorHook<T>, ? extends OperatorHook<T>> hook;
 
-		OnOperatorCreate(Function<? super OperatorHook<T>, ? extends OperatorHook<T>> hook) {
+		OnOperatorHook(Function<? super OperatorHook<T>, ? extends OperatorHook<T>> hook) {
 			this.hook = hook;
 		}
 
@@ -517,16 +535,11 @@ public abstract class Hooks {
 				OperatorHook<T> hooks =
 						Objects.requireNonNull(hook.apply(new OperatorHook<>(publisher)), "hook");
 
-				if(hooks.tracedLevel != null){
-					SignalLogger peek = new SignalLogger<>(publisher, hooks
-							.tracedCategory, hooks.tracedLevel, true, hooks
-							.tracedSignals);
+				if (hooks.tracedLevel != null) {
 
-					hooks = hooks.doOnSignal(peek.onSubscribeCall(), peek
-									.onNextCall(),
-							peek
-									.onErrorCall(), peek.onCompleteCall(), peek.onAfterTerminateCall(),
-							peek.onRequestCall(), peek.onCancelCall());
+					hooks = hooks.doOnSignal(new SignalLogger<>(publisher, hooks
+							.tracedCategory, hooks.tracedLevel, true, hooks
+							.tracedSignals));
 				}
 
 				if (hooks != OperatorHook.IGNORE) {
@@ -538,17 +551,17 @@ public abstract class Hooks {
 					if (trace){
 						if (publisher instanceof Callable) {
 							if (publisher instanceof Mono) {
-								return new MonoCallableOnAssembly<>(publisher);
+								return new MonoCallableOnAssembly<>((Mono<T>)publisher);
 							}
-							return new FluxCallableOnAssembly<>(publisher);
+							return new FluxCallableOnAssembly<>((Flux<T>)publisher);
 						}
 						if (publisher instanceof Mono) {
-							return new MonoOnAssembly<>(publisher);
+							return new MonoOnAssembly<>((Mono<T>)publisher);
 						}
 						if (publisher instanceof ParallelFlux){
 							return new ParallelFluxOnAssembly<>((ParallelFlux<T>) publisher);
 						}
-						return new FluxOnAssembly<>(publisher);
+						return new FluxOnAssembly<>((Flux<T>)publisher);
 					}
 					return publisher;
 				}

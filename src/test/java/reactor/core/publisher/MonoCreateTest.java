@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,6 +24,7 @@ import org.reactivestreams.Subscription;
 
 import reactor.core.scheduler.Schedulers;
 import reactor.test.StepVerifier;
+import reactor.util.context.Context;
 
 import static org.assertj.core.api.AssertionsForClassTypes.assertThat;
 
@@ -107,6 +108,27 @@ public class MonoCreateTest {
 
 		assertThat(dispose1.get()).isEqualTo(1);
 		assertThat(cancel1.get()).isEqualTo(0);
+	}
+
+	@Test
+	public void context() {
+		AtomicInteger x = new AtomicInteger();
+		Mono.create(s -> s.contextualize(c -> c.put("test", c.<Integer>get("test") + 1))
+		                  .success("success"))
+		    .subscribe(new BaseSubscriber<Object>() {
+			    @Override
+			    public Context currentContext() {
+				    return Context.empty()
+				                  .put("test", 1);
+			    }
+
+			    @Override
+			    protected void hookOnContext(Context context) {
+				    x.set(context.get("test"));
+			    }
+		    });
+
+		assertThat(x.get()).isEqualTo(2);
 	}
 
 	@Test

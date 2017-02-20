@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,6 +33,7 @@ import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
 import reactor.core.Exceptions;
+import reactor.util.context.Context;
 
 /**
  * buffers elements into possibly overlapping buffers whose boundaries are determined
@@ -46,7 +47,7 @@ import reactor.core.Exceptions;
  * @see <a href="https://github.com/reactor/reactive-streams-commons">Reactive-Streams-Commons</a>
  */
 final class FluxBufferStartEnd<T, U, V, C extends Collection<? super T>>
-		extends FluxSource<T, C> {
+		extends FluxOperator<T, C> {
 
 	final Publisher<U> start;
 
@@ -56,7 +57,7 @@ final class FluxBufferStartEnd<T, U, V, C extends Collection<? super T>>
 
 	final Supplier<? extends Queue<C>> queueSupplier;
 
-	FluxBufferStartEnd(Publisher<? extends T> source,
+	FluxBufferStartEnd(Flux<? extends T> source,
 			Publisher<U> start,
 			Function<? super U, ? extends Publisher<V>> end,
 			Supplier<C> bufferSupplier,
@@ -74,7 +75,7 @@ final class FluxBufferStartEnd<T, U, V, C extends Collection<? super T>>
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super C> s) {
+	public void subscribe(Subscriber<? super C> s, Context ctx) {
 
 		Queue<C> q = queueSupplier.get();
 
@@ -85,14 +86,12 @@ final class FluxBufferStartEnd<T, U, V, C extends Collection<? super T>>
 
 		start.subscribe(parent.starter);
 
-		source.subscribe(parent);
+		source.subscribe(parent, ctx);
 	}
 
 	static final class BufferStartEndMainSubscriber<T, U, V, C extends Collection<? super T>>
-			implements Subscriber<T>, Subscription {
-
-		final Subscriber<? super C> actual;
-
+			extends CachedContextProducer<C>
+			implements InnerOperator<T, C> {
 		final Supplier<C> bufferSupplier;
 
 		final Queue<C> queue;
@@ -149,7 +148,7 @@ final class FluxBufferStartEnd<T, U, V, C extends Collection<? super T>>
 				Supplier<C> bufferSupplier,
 				Queue<C> queue,
 				Function<? super U, ? extends Publisher<V>> end) {
-			this.actual = actual;
+			super(actual);
 			this.bufferSupplier = bufferSupplier;
 			this.buffers = new HashMap<>();
 			this.endSubscriptions = new HashSet<>();
@@ -467,14 +466,36 @@ final class FluxBufferStartEnd<T, U, V, C extends Collection<? super T>>
 			}
 			return false;
 		}
+
+		@Override
+		public Object scan(Attr key) {
+			switch (key) {
+				case PARENT:
+					return s;
+				case TERMINATED:
+					return done;
+				case CANCELLED:
+					return cancelled;
+				case PREFETCH:
+					return Integer.MAX_VALUE;
+				case BUFFERED:
+					return buffers.values()
+					              .stream()
+					              .mapToInt(Collection::size)
+					              .sum();
+				case REQUESTED_FROM_DOWNSTREAM:
+					return requested;
+			}
+			return InnerOperator.super.scan(key);
+		}
 	}
 
 	static final class BufferStartEndStarter<U> extends Operators.DeferredSubscription
-			implements Subscriber<U> {
+			implements InnerConsumer<U> {
 
 		final BufferStartEndMainSubscriber<?, U, ?, ?> main;
 
-		public BufferStartEndStarter(BufferStartEndMainSubscriber<?, U, ?, ?> main) {
+		BufferStartEndStarter(BufferStartEndMainSubscriber<?, U, ?, ?> main) {
 			this.main = main;
 		}
 
@@ -499,10 +520,23 @@ final class FluxBufferStartEnd<T, U, V, C extends Collection<? super T>>
 		public void onComplete() {
 			main.startComplete();
 		}
+
+		@Override
+		public Context currentContext() {
+			return main.currentContext();
+		}
+
+		@Override
+		public Object scan(Attr key) {
+			if (key == Attr.ACTUAL) {
+				return main;
+			}
+			return super.scan(key);
+		}
 	}
 
 	static final class BufferStartEndEnder<T, V, C extends Collection<? super T>>
-			extends Operators.DeferredSubscription implements Subscriber<V> {
+			extends Operators.DeferredSubscription implements InnerConsumer<V> {
 
 		final BufferStartEndMainSubscriber<T, ?, V, C> main;
 
@@ -510,12 +544,25 @@ final class FluxBufferStartEnd<T, U, V, C extends Collection<? super T>>
 
 		final long index;
 
-		public BufferStartEndEnder(BufferStartEndMainSubscriber<T, ?, V, C> main,
+		BufferStartEndEnder(BufferStartEndMainSubscriber<T, ?, V, C> main,
 				C buffer,
 				long index) {
 			this.main = main;
 			this.buffer = buffer;
 			this.index = index;
+		}
+
+		@Override
+		public Context currentContext() {
+			return main.currentContext();
+		}
+
+		@Override
+		public Object scan(Attr key) {
+			if (key == Attr.ACTUAL) {
+				return main;
+			}
+			return super.scan(key);
 		}
 
 		@Override

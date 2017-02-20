@@ -21,6 +21,7 @@ import java.util.Objects;
 import java.util.concurrent.Callable;
 
 import org.reactivestreams.Subscriber;
+import reactor.util.context.Context;
 
 /**
  * Executes the runnable whenever a Subscriber subscribes to this Mono.
@@ -34,7 +35,7 @@ final class MonoRunnable extends Mono<Void> implements Callable<Void> {
     }
 
     @Override
-    public void subscribe(Subscriber<? super Void> s) {
+    public void subscribe(Subscriber<? super Void> s, Context context) {
         try {
             run.run();
         } catch (Throwable ex) {

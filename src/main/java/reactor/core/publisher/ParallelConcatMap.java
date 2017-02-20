@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,7 +20,9 @@ import java.util.function.*;
 
 import org.reactivestreams.*;
 
+import reactor.core.Scannable;
 import reactor.core.publisher.FluxConcatMap.ErrorMode;
+import reactor.util.context.Context;
 
 /**
  * Concatenates the generated Publishers on each rail.
@@ -28,7 +30,7 @@ import reactor.core.publisher.FluxConcatMap.ErrorMode;
  * @param <T> the input value type
  * @param <R> the output value type
  */
-final class ParallelConcatMap<T, R> extends ParallelFlux<R> {
+final class ParallelConcatMap<T, R> extends ParallelFlux<R> implements Scannable{
 
 	final ParallelFlux<T> source;
 	
@@ -40,7 +42,7 @@ final class ParallelConcatMap<T, R> extends ParallelFlux<R> {
 	
 	final ErrorMode errorMode;
 
-	public ParallelConcatMap(
+	ParallelConcatMap(
 			ParallelFlux<T> source,
 			Function<? super T, ? extends Publisher<? extends R>> mapper, 
 					Supplier<? extends Queue<T>> queueSupplier,
@@ -50,6 +52,17 @@ final class ParallelConcatMap<T, R> extends ParallelFlux<R> {
 		this.queueSupplier = Objects.requireNonNull(queueSupplier, "queueSupplier");
 		this.prefetch = prefetch;
 		this.errorMode = Objects.requireNonNull(errorMode, "errorMode");
+	}
+
+	@Override
+	public Object scan(Attr key) {
+		switch (key){
+			case PARENT:
+				return source;
+			case PREFETCH:
+				return getPrefetch();
+		}
+		return null;
 	}
 
 	@Override
@@ -63,7 +76,7 @@ final class ParallelConcatMap<T, R> extends ParallelFlux<R> {
 	}
 	
 	@Override
-	public void subscribe(Subscriber<? super R>[] subscribers) {
+	public void subscribe(Subscriber<? super R>[] subscribers, Context ctx) {
 		if (!validate(subscribers)) {
 			return;
 		}
@@ -75,9 +88,9 @@ final class ParallelConcatMap<T, R> extends ParallelFlux<R> {
 		
 		for (int i = 0; i < n; i++) {
 			parents[i] = FluxConcatMap.subscriber(subscribers[i], mapper,
-					queueSupplier, prefetch, errorMode);
+					queueSupplier, prefetch, errorMode, ctx);
 		}
 		
-		source.subscribe(parents);
+		source.subscribe(parents, ctx);
 	}
 }

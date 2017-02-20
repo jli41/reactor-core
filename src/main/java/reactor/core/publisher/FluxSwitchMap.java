@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,11 +24,14 @@ import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
 import java.util.function.BiPredicate;
 import java.util.function.Function;
 import java.util.function.Supplier;
+import java.util.stream.Stream;
 
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
 import reactor.core.Exceptions;
+import reactor.core.Scannable;
+import reactor.util.context.Context;
 
 /**
  * Switches to a new Publisher generated via a function whenever the upstream produces an
@@ -39,7 +42,7 @@ import reactor.core.Exceptions;
  *
  * @see <a href="https://github.com/reactor/reactive-streams-commons">Reactive-Streams-Commons</a>
  */
-final class FluxSwitchMap<T, R> extends FluxSource<T, R> {
+final class FluxSwitchMap<T, R> extends FluxOperator<T, R> {
 
 	final Function<? super T, ? extends Publisher<? extends R>> mapper;
 
@@ -50,7 +53,7 @@ final class FluxSwitchMap<T, R> extends FluxSource<T, R> {
 	static final SwitchMapInner<Object> CANCELLED_INNER =
 			new SwitchMapInner<>(null, 0, Long.MAX_VALUE);
 
-	FluxSwitchMap(Publisher<? extends T> source,
+	FluxSwitchMap(ContextualPublisher<? extends T> source,
 			Function<? super T, ? extends Publisher<? extends R>> mapper,
 			Supplier<? extends Queue<Object>> queueSupplier,
 			int bufferSize) {
@@ -69,7 +72,7 @@ final class FluxSwitchMap<T, R> extends FluxSource<T, R> {
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super R> s) {
+	public void subscribe(Subscriber<? super R> s, Context ctx) {
 		if (FluxFlatMap.trySubscribeScalarMap(source, s, mapper, false)) {
 			return;
 		}
@@ -77,12 +80,12 @@ final class FluxSwitchMap<T, R> extends FluxSource<T, R> {
 		source.subscribe(new SwitchMapMain<T, R>(s,
 				mapper,
 				queueSupplier.get(),
-				bufferSize));
+				bufferSize), ctx);
 	}
 
-	static final class SwitchMapMain<T, R> implements Subscriber<T>, Subscription {
-
-		final Subscriber<? super R> actual;
+	static final class SwitchMapMain<T, R>
+			extends CachedContextProducer<R>
+			implements InnerOperator<T, R> {
 
 		final Function<? super T, ? extends Publisher<? extends R>> mapper;
 
@@ -142,7 +145,7 @@ final class FluxSwitchMap<T, R> extends FluxSource<T, R> {
 				Function<? super T, ? extends Publisher<? extends R>> mapper,
 				Queue<Object> queue,
 				int bufferSize) {
-			this.actual = actual;
+			super(actual);
 			this.mapper = mapper;
 			this.queue = queue;
 			this.bufferSize = bufferSize;
@@ -153,6 +156,32 @@ final class FluxSwitchMap<T, R> extends FluxSource<T, R> {
 			else {
 				this.queueBiAtomic = null;
 			}
+		}
+
+		@Override
+		public Object scan(Attr key) {
+			switch (key){
+				case CANCELLED:
+					return cancelled;
+				case PARENT:
+					return s;
+				case TERMINATED:
+					return done;
+				case ERROR:
+					return error;
+				case PREFETCH:
+					return bufferSize;
+				case BUFFERED:
+					return queue.size();
+				case REQUESTED_FROM_DOWNSTREAM:
+					return requested;
+			}
+			return super.scan(key);
+		}
+
+		@Override
+		public Stream<? extends Scannable> inners() {
+			return Stream.of(inner);
 		}
 
 		@Override
@@ -390,7 +419,7 @@ final class FluxSwitchMap<T, R> extends FluxSource<T, R> {
 		}
 	}
 
-	static final class SwitchMapInner<R> implements Subscriber<R>, Subscription {
+	static final class SwitchMapInner<R> implements InnerConsumer<R>, Subscription {
 
 		final SwitchMapMain<?, R> parent;
 
@@ -414,11 +443,33 @@ final class FluxSwitchMap<T, R> extends FluxSource<T, R> {
 
 		int produced;
 
-		public SwitchMapInner(SwitchMapMain<?, R> parent, int bufferSize, long index) {
+		SwitchMapInner(SwitchMapMain<?, R> parent, int bufferSize, long index) {
 			this.parent = parent;
 			this.bufferSize = bufferSize;
 			this.limit = bufferSize - (bufferSize >> 2);
 			this.index = index;
+		}
+
+		@Override
+		public Context currentContext() {
+			return parent.currentContext();
+		}
+
+		@Override
+		public Object scan(Attr key) {
+			switch (key){
+				case CANCELLED:
+					return s == Operators.cancelledSubscription();
+				case PARENT:
+					return s;
+				case ACTUAL:
+					return parent;
+				case PREFETCH:
+					return bufferSize;
+				case LIMIT:
+					return limit;
+			}
+			return null;
 		}
 
 		@Override

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,11 +18,11 @@ package reactor.core.publisher;
 
 import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
 
-import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
 import reactor.core.Cancellation;
 import reactor.core.scheduler.Scheduler;
+import reactor.util.context.Context;
 
 /**
  * Schedules the emission of the value or completion of the wrapped Mono via
@@ -30,22 +30,22 @@ import reactor.core.scheduler.Scheduler;
  *
  * @param <T> the value type
  */
-final class MonoPublishOn<T> extends MonoSource<T, T> {
+final class MonoPublishOn<T> extends MonoOperator<T, T> {
 
 	final Scheduler scheduler;
 
-	public MonoPublishOn(Publisher<? extends T> source, Scheduler scheduler) {
+	MonoPublishOn(Mono<? extends T> source, Scheduler scheduler) {
 		super(source);
 		this.scheduler = scheduler;
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super T> s) {
-		source.subscribe(new MonoPublishOnSubscriber<T>(s, scheduler));
+	public void subscribe(Subscriber<? super T> s, Context ctx) {
+		source.subscribe(new PublishOnSubscriber<T>(s, scheduler), ctx);
 	}
 
-	static final class MonoPublishOnSubscriber<T>
-			implements Subscriber<T>, Subscription, Runnable {
+	static final class PublishOnSubscriber<T>
+			implements InnerOperator<T, T>, Runnable {
 
 		final Subscriber<? super T> actual;
 
@@ -55,19 +55,37 @@ final class MonoPublishOn<T> extends MonoSource<T, T> {
 
 		volatile Cancellation future;
 		@SuppressWarnings("rawtypes")
-		static final AtomicReferenceFieldUpdater<MonoPublishOnSubscriber, Cancellation>
+		static final AtomicReferenceFieldUpdater<PublishOnSubscriber, Cancellation>
 				FUTURE =
-				AtomicReferenceFieldUpdater.newUpdater(MonoPublishOnSubscriber.class,
+				AtomicReferenceFieldUpdater.newUpdater(PublishOnSubscriber.class,
 						Cancellation.class,
 						"future");
 
 		T         value;
 		Throwable error;
 
-		public MonoPublishOnSubscriber(Subscriber<? super T> actual,
+		PublishOnSubscriber(Subscriber<? super T> actual,
 				Scheduler scheduler) {
 			this.actual = actual;
 			this.scheduler = scheduler;
+		}
+
+		@Override
+		public Object scan(Attr key) {
+			switch (key){
+				case CANCELLED:
+					return future == Flux.CANCELLED;
+				case PARENT:
+					return s;
+				case ERROR:
+					return error;
+			}
+			return InnerOperator.super.scan(key);
+		}
+
+		@Override
+		public Subscriber<? super T> actual() {
+			return actual;
 		}
 
 		@Override

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@ package reactor.core.publisher;
 import java.util.Objects;
 
 import org.reactivestreams.Subscriber;
+import reactor.util.context.Context;
 
 /**
  * Switches to another source if the first source turns out to be empty.
@@ -25,7 +26,7 @@ import org.reactivestreams.Subscriber;
  * @param <T> the value type
  * @see <a href="https://github.com/reactor/reactive-streams-commons">Reactive-Streams-Commons</a>
  */
-final class MonoOtherwiseIfEmpty<T> extends MonoSource<T, T> {
+final class MonoOtherwiseIfEmpty<T> extends MonoOperator<T, T> {
 
     final Mono<? extends T> other;
 
@@ -35,12 +36,12 @@ final class MonoOtherwiseIfEmpty<T> extends MonoSource<T, T> {
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super T> s) {
+	public void subscribe(Subscriber<? super T> s, Context ctx) {
 		FluxSwitchIfEmpty.SwitchIfEmptySubscriber<T> parent = new
-				FluxSwitchIfEmpty.SwitchIfEmptySubscriber<>(s, other);
+				FluxSwitchIfEmpty.SwitchIfEmptySubscriber<>(s, other, ctx);
 
 		s.onSubscribe(parent);
 
-		source.subscribe(parent);
+		source.subscribe(parent, ctx);
 	}
 }

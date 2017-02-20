@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *        http://www.apache.org/licenses/LICENSE-2.0
+ *       http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -19,12 +19,11 @@ package reactor.core.publisher;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 
-import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
 import reactor.core.Cancellation;
-import reactor.core.Receiver;
 import reactor.core.scheduler.Scheduler;
+import reactor.util.context.Context;
 
 /**
  * Emits the first value emitted by a given source publisher, delayed by some time amount
@@ -33,8 +32,9 @@ import reactor.core.scheduler.Scheduler;
  *
  * @see <a href="https://github.com/reactor/reactive-streams-commons">Reactive-Streams-Commons</a>
  * @author Simon Baslé
+ * NOTE : Review impl
  */
-final class MonoDelayElement<T> extends MonoSource<T, T> {
+final class MonoDelayElement<T> extends MonoOperator<T, T> {
 
 	final Scheduler timedScheduler;
 
@@ -42,7 +42,7 @@ final class MonoDelayElement<T> extends MonoSource<T, T> {
 
 	final TimeUnit unit;
 
-	public MonoDelayElement(Publisher<? extends T> source, long delay, TimeUnit unit, Scheduler timedScheduler) {
+	MonoDelayElement(Mono<? extends T> source, long delay, TimeUnit unit, Scheduler timedScheduler) {
 		super(source);
 		this.delay = delay;
 		this.unit = Objects.requireNonNull(unit, "unit");
@@ -50,13 +50,12 @@ final class MonoDelayElement<T> extends MonoSource<T, T> {
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super T> s) {
-		MonoDelayElementSubscriber r = new MonoDelayElementSubscriber<>(s, timedScheduler, delay, unit);
-		source.subscribe(r);
+	public void subscribe(Subscriber<? super T> s, Context ctx) {
+		source.subscribe(new DelayElementSubscriber<>(s, timedScheduler, delay, unit),
+				ctx);
 	}
 
-	static final class MonoDelayElementSubscriber<T> extends Operators.MonoSubscriber<T,T>
-			implements Subscription, Receiver {
+	static final class DelayElementSubscriber<T> extends Operators.MonoSubscriber<T,T> {
 
 		final long delay;
 		final Scheduler scheduler;
@@ -67,7 +66,7 @@ final class MonoDelayElement<T> extends MonoSource<T, T> {
 		volatile Cancellation task;
 		volatile boolean done;
 
-		MonoDelayElementSubscriber(Subscriber<? super T> actual, Scheduler scheduler,
+		DelayElementSubscriber(Subscriber<? super T> actual, Scheduler scheduler,
 				long delay, TimeUnit unit) {
 			super(actual);
 			this.scheduler = scheduler;
@@ -75,6 +74,16 @@ final class MonoDelayElement<T> extends MonoSource<T, T> {
 			this.unit = unit;
 		}
 
+		@Override
+		public Object scan(Attr key) {
+			switch (key){
+				case TERMINATED:
+					return done;
+				case PARENT:
+					return s;
+			}
+			return super.scan(key);
+		}
 
 		@Override
 		public void cancel() {
@@ -104,11 +113,12 @@ final class MonoDelayElement<T> extends MonoSource<T, T> {
 				return;
 			}
 			this.done = true;
-			this.task = scheduler.schedule(() -> complete(t), delay, unit);
+			Cancellation task = scheduler.schedule(() -> complete(t), delay, unit);
 			if (task == Scheduler.REJECTED) {
 					throw Operators.onRejectedExecution(this, null, t);
 			}
 			else {
+				this.task = task;
 				Subscription actualS = s;
 				s = Operators.cancelledSubscription();
 				actualS.cancel();
@@ -132,11 +142,6 @@ final class MonoDelayElement<T> extends MonoSource<T, T> {
 			}
 			this.done = true;
 			actual.onError(t);
-		}
-
-		@Override
-		public Object upstream() {
-			return s;
 		}
 	}
 }

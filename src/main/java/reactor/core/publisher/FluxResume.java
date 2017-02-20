@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,7 +22,7 @@ import java.util.function.Function;
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
-import reactor.core.Loopback;
+import reactor.util.context.Context;
 
 /**
  * Resumes the failed main sequence with another sequence returned by
@@ -32,45 +32,45 @@ import reactor.core.Loopback;
  *
  * @see <a href="https://github.com/reactor/reactive-streams-commons">Reactive-Streams-Commons</a>
  */
-final class FluxResume<T> extends FluxSource<T, T> {
+final class FluxResume<T> extends FluxOperator<T, T> {
 
 	final Function<? super Throwable, ? extends Publisher<? extends T>> nextFactory;
 
-	public FluxResume(Publisher<? extends T> source,
+	FluxResume(Flux<? extends T> source,
 			Function<? super Throwable, ? extends Publisher<? extends T>> nextFactory) {
 		super(source);
 		this.nextFactory = Objects.requireNonNull(nextFactory, "nextFactory");
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super T> s) {
-		source.subscribe(new ResumeSubscriber<>(s, nextFactory));
+	public void subscribe(Subscriber<? super T> s, Context ctx) {
+		source.subscribe(new ResumeSubscriber<>(s, nextFactory, ctx), ctx);
 	}
 
 	static final class ResumeSubscriber<T>
-			extends Operators.MultiSubscriptionSubscriber<T, T> implements Loopback {
+			extends Operators.MultiSubscriptionSubscriber<T, T> {
 
 		final Function<? super Throwable, ? extends Publisher<? extends T>> nextFactory;
 
 		boolean second;
 
-		public ResumeSubscriber(Subscriber<? super T> actual,
-				Function<? super Throwable, ? extends Publisher<? extends T>> nextFactory) {
-			super(actual);
+		ResumeSubscriber(Subscriber<? super T> actual,
+				Function<? super Throwable, ? extends Publisher<? extends T>> nextFactory, Context ctx) {
+			super(actual, ctx);
 			this.nextFactory = nextFactory;
 		}
 
 		@Override
 		public void onSubscribe(Subscription s) {
 			if (!second) {
-				subscriber.onSubscribe(this);
+				actual.onSubscribe(this);
 			}
 			set(s);
 		}
 
 		@Override
 		public void onNext(T t) {
-			subscriber.onNext(t);
+			actual.onNext(t);
 
 			if (!second) {
 				producedOne();
@@ -93,21 +93,15 @@ final class FluxResume<T> extends FluxSource<T, T> {
 					if (t != _e) {
 						_e.addSuppressed(t);
 					}
-					subscriber.onError(_e);
+					actual.onError(_e);
 					return;
 				}
 				p.subscribe(this);
 			}
 			else {
-				subscriber.onError(t);
+				actual.onError(t);
 			}
 		}
-
-		@Override
-		public Object connectedInput() {
-			return nextFactory;
-		}
-
 
 	}
 }

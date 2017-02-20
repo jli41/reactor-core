@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *        http://www.apache.org/licenses/LICENSE-2.0
+ *       http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -23,6 +23,7 @@ import java.util.concurrent.atomic.AtomicLongFieldUpdater;
 import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
 import java.util.function.Function;
 import java.util.function.Supplier;
+import java.util.stream.Stream;
 
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
@@ -30,8 +31,10 @@ import org.reactivestreams.Subscription;
 import reactor.core.Exceptions;
 import reactor.core.Fuseable;
 import reactor.core.Fuseable.QueueSubscription;
+import reactor.core.Scannable;
 import reactor.core.publisher.FluxConcatMap.ErrorMode;
 import reactor.util.concurrent.QueueSupplier;
+import reactor.util.context.Context;
 
 /**
  * Maps each upstream value into a Publisher and concatenates them into one
@@ -41,7 +44,7 @@ import reactor.util.concurrent.QueueSupplier;
  * @param <R> the output value type
  * @see <a href="https://github.com/reactor/reactive-streams-commons">Reactive-Streams-Commons</a>
  */
-final class FluxMergeSequential<T, R> extends FluxSource<T, R> {
+final class FluxMergeSequential<T, R> extends FluxOperator<T, R> {
 
 	final ErrorMode errorMode;
 
@@ -53,7 +56,7 @@ final class FluxMergeSequential<T, R> extends FluxSource<T, R> {
 
 	final Supplier<Queue<MergeSequentialInner<R>>> queueSupplier;
 
-	FluxMergeSequential(Publisher<? extends T> source,
+	FluxMergeSequential(ContextualPublisher<? extends T> source,
 			Function<? super T, ? extends Publisher<? extends R>> mapper,
 			int maxConcurrency, int prefetch, ErrorMode errorMode) {
 		this(source, mapper, maxConcurrency, prefetch, errorMode,
@@ -61,7 +64,7 @@ final class FluxMergeSequential<T, R> extends FluxSource<T, R> {
 	}
 
 	//for testing purpose
-	FluxMergeSequential(Publisher<? extends T> source,
+	FluxMergeSequential(ContextualPublisher<? extends T> source,
 			Function<? super T, ? extends Publisher<? extends R>> mapper,
 			int maxConcurrency, int prefetch, ErrorMode errorMode,
 			Supplier<Queue<MergeSequentialInner<R>>> queueSupplier) {
@@ -80,7 +83,7 @@ final class FluxMergeSequential<T, R> extends FluxSource<T, R> {
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super R> s) {
+	public void subscribe(Subscriber<? super R> s, Context ctx) {
 		if (FluxFlatMap.trySubscribeScalarMap(source, s, mapper, false)) {
 			return;
 		}
@@ -91,14 +94,12 @@ final class FluxMergeSequential<T, R> extends FluxSource<T, R> {
 				prefetch,
 				errorMode,
 				queueSupplier);
-		source.subscribe(parent);
+		source.subscribe(parent, ctx);
 	}
 
 	static final class MergeSequentialMain<T, R>
-			implements Subscriber<T>, FluxMergeSequentialSupport<R>, Subscription {
-
-		/** the downstream subscriber */
-		final Subscriber<? super R> actual;
+			extends CachedContextProducer<R>
+			implements InnerOperator<T, R> {
 
 		/** the mapper giving the inner publisher for each source value */
 		final Function<? super T, ? extends Publisher<? extends R>> mapper;
@@ -146,12 +147,40 @@ final class FluxMergeSequential<T, R> extends FluxSource<T, R> {
 				Function<? super T, ? extends Publisher<? extends R>> mapper,
 				int maxConcurrency, int prefetch, ErrorMode errorMode,
 				Supplier<Queue<MergeSequentialInner<R>>> queueSupplier) {
-			this.actual = actual;
+			super(actual);
 			this.mapper = mapper;
 			this.maxConcurrency = maxConcurrency;
 			this.prefetch = prefetch;
 			this.errorMode = errorMode;
 			this.subscribers = queueSupplier.get();
+		}
+
+		@Override
+		public Stream<? extends Scannable> inners() {
+			return Stream.of(subscribers.peek());
+		}
+
+		@Override
+		public Object scan(Attr key) {
+			switch (key) {
+				case PARENT:
+					return s;
+				case ERROR:
+					return error;
+				case TERMINATED:
+					return done && subscribers.isEmpty();
+				case DELAY_ERROR:
+					return errorMode != ErrorMode.IMMEDIATE;
+				case DELAY_ERROR_END:
+					return errorMode == ErrorMode.END;
+				case PREFETCH:
+					return maxConcurrency;
+				case REQUESTED_FROM_DOWNSTREAM:
+					return requested;
+				case BUFFERED:
+					return subscribers.size();
+			}
+			return InnerOperator.super.scan(key);
 		}
 
 		@Override
@@ -261,8 +290,7 @@ final class FluxMergeSequential<T, R> extends FluxSource<T, R> {
 			}
 		}
 
-		@Override
-		public void innerNext(MergeSequentialInner<R> inner, R value) {
+		void innerNext(MergeSequentialInner<R> inner, R value) {
 			if (inner.queue().offer(value)) {
 				drain();
 			}
@@ -272,8 +300,7 @@ final class FluxMergeSequential<T, R> extends FluxSource<T, R> {
 			}
 		}
 
-		@Override
-		public void innerError(MergeSequentialInner<R> inner, Throwable e) {
+		void innerError(MergeSequentialInner<R> inner, Throwable e) {
 			if (Exceptions.addThrowable(ERROR, this, e)) {
 				inner.setDone();
 				if (errorMode != ErrorMode.END) {
@@ -286,14 +313,12 @@ final class FluxMergeSequential<T, R> extends FluxSource<T, R> {
 			}
 		}
 
-		@Override
-		public void innerComplete(MergeSequentialInner<R> inner) {
+		void innerComplete(MergeSequentialInner<R> inner) {
 			inner.setDone();
 			drain();
 		}
 
-		@Override
-		public void drain() {
+		void drain() {
 			if (WIP.getAndIncrement(this) != 0) {
 				return;
 			}
@@ -453,9 +478,9 @@ final class FluxMergeSequential<T, R> extends FluxSource<T, R> {
 	 * order can be restored.
 	 * @param <R> the type of objects emitted by the inner flux
 	 */
-	static final class MergeSequentialInner<R> implements Subscriber<R>{
+	static final class MergeSequentialInner<R> implements InnerConsumer<R>{
 
-		final FluxMergeSequentialSupport<R> parent;
+		final MergeSequentialMain<?, R> parent;
 
 		final int prefetch;
 
@@ -475,10 +500,36 @@ final class FluxMergeSequential<T, R> extends FluxSource<T, R> {
 
 		int fusionMode;
 
-		MergeSequentialInner(FluxMergeSequentialSupport<R> parent, int prefetch) {
+		MergeSequentialInner(MergeSequentialMain<?, R> parent, int prefetch) {
 			this.parent = parent;
 			this.prefetch = prefetch;
 			this.limit = prefetch - (prefetch >> 2);
+		}
+
+		@Override
+		public Context currentContext() {
+			return parent.currentContext();
+		}
+
+		@Override
+		public Object scan(Attr key) {
+			switch (key) {
+				case PARENT:
+					return subscription;
+				case ACTUAL:
+					return parent;
+				case TERMINATED:
+					return done && (queue == null || queue.isEmpty());
+				case CANCELLED:
+					return subscription == Operators.cancelledSubscription();
+				case BUFFERED:
+					return queue == null ? 0 : queue.size();
+				case PREFETCH:
+					return prefetch;
+				case LIMIT:
+					return limit;
+			}
+			return null;
 		}
 
 		@Override
@@ -546,28 +597,17 @@ final class FluxMergeSequential<T, R> extends FluxSource<T, R> {
 			Operators.set(SUBSCRIPTION, this, Operators.cancelledSubscription());
 		}
 
-		public boolean isDone() {
+		boolean isDone() {
 			return done;
 		}
 
-		public void setDone() {
+		void setDone() {
 			this.done = true;
 		}
 
-		public Queue<R> queue() {
+		Queue<R> queue() {
 			return queue;
 		}
-	}
-
-	interface FluxMergeSequentialSupport<T> {
-
-		void innerNext(MergeSequentialInner<T> inner, T value);
-
-		void innerComplete(MergeSequentialInner<T> inner);
-
-		void innerError(MergeSequentialInner<T> inner, Throwable e);
-
-		void drain();
 	}
 
 }

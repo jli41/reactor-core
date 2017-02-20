@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,7 +20,8 @@ import java.util.Objects;
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
-import reactor.core.Producer;
+import reactor.util.context.ContextRelay;
+import reactor.util.context.Context;
 
 /**
  * Delays the subscription to the main source until another Publisher
@@ -30,11 +31,11 @@ import reactor.core.Producer;
  * @param <U> the other source type
  * @see <a href="https://github.com/reactor/reactive-streams-commons">Reactive-Streams-Commons</a>
  */
-final class FluxDelaySubscription<T, U> extends FluxSource<T, T> {
+final class FluxDelaySubscription<T, U> extends FluxOperator<T, T> {
 
 	final Publisher<U> other;
 
-	public FluxDelaySubscription(Publisher<? extends T> source, Publisher<U> other) {
+	FluxDelaySubscription(Flux<? extends T> source, Publisher<U> other) {
 		super(source);
 		this.other = Objects.requireNonNull(other, "other");
 	}
@@ -45,29 +46,53 @@ final class FluxDelaySubscription<T, U> extends FluxSource<T, T> {
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super T> s) {
-		other.subscribe(new DelaySubscriptionOtherSubscriber<>(s, source));
+	public void subscribe(Subscriber<? super T> s, Context ctx) {
+		other.subscribe(new DelaySubscriptionOtherSubscriber<>(s, source, ctx));
 	}
 
 	static final class DelaySubscriptionOtherSubscriber<T, U>
-			extends Operators.DeferredSubscription implements Producer,
-			                                                        Subscriber<U> {
+			extends Operators.DeferredSubscription implements InnerOperator<U, T> {
 
-		final Publisher<? extends T> source;
+		final ContextualPublisher<? extends T> source;
 
 		final Subscriber<? super T> actual;
+
+		final Context ctx;
 
 		Subscription s;
 
 		boolean done;
 
-		public DelaySubscriptionOtherSubscriber(Subscriber<? super T> actual, Publisher<? extends T> source) {
+		DelaySubscriptionOtherSubscriber(Subscriber<? super T> actual, ContextualPublisher<?
+				extends T> source, Context ctx) {
 			this.actual = actual;
 			this.source = source;
+			this.ctx = ctx;
 		}
 
 		@Override
-		public Object downstream() {
+		public Context currentContext() {
+			return ctx;
+		}
+
+		@Override
+		public Object scan(Attr key) {
+			switch (key) {
+				case PARENT:
+					return s;
+				case TERMINATED:
+					return done;
+			}
+			return super.scan(key);
+		}
+
+		@Override
+		public void onContext(Context context) {
+			//IGNORE
+		}
+
+		@Override
+		public Subscriber<? super T> actual() {
 			return actual;
 		}
 
@@ -120,19 +145,39 @@ final class FluxDelaySubscription<T, U> extends FluxSource<T, T> {
 		}
 
 		void subscribeSource() {
-			source.subscribe(new DelaySubscriptionMainSubscriber<>(actual, this));
+			source.subscribe(new DelaySubscriptionMainSubscriber<>(actual, this), ctx);
 		}
 
-		static final class DelaySubscriptionMainSubscriber<T> implements Subscriber<T> {
+		static final class DelaySubscriptionMainSubscriber<T>
+				implements InnerConsumer<T> {
 
 			final Subscriber<? super T> actual;
 
 			final DelaySubscriptionOtherSubscriber<?, ?> arbiter;
 
-			public DelaySubscriptionMainSubscriber(Subscriber<? super T> actual,
+			DelaySubscriptionMainSubscriber(Subscriber<? super T> actual,
 					DelaySubscriptionOtherSubscriber<?, ?> arbiter) {
 				this.actual = actual;
 				this.arbiter = arbiter;
+			}
+
+			@Override
+			public void onContext(Context context) {
+				ContextRelay.set(actual, context);
+			}
+
+			@Override
+			public Context currentContext() {
+				return arbiter.ctx;
+			}
+
+			@Override
+			public Object scan(Attr key) {
+				switch (key){
+					case ACTUAL:
+						return actual;
+				}
+				return null;
 			}
 
 			@Override

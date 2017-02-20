@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,6 +23,7 @@ import org.reactivestreams.Subscriber;
 import reactor.core.Cancellation;
 import reactor.core.Fuseable;
 import reactor.core.scheduler.Scheduler;
+import reactor.util.context.Context;
 
 /**
  * Executes a Callable and emits its value on the given Scheduler.
@@ -42,7 +43,7 @@ final class MonoSubscribeOnCallable<T> extends Mono<T> implements Fuseable {
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super T> s) {
+	public void subscribe(Subscriber<? super T> s, Context context) {
 		FluxSubscribeOnCallable.CallableSubscribeOnSubscription<T> parent =
 				new FluxSubscribeOnCallable.CallableSubscribeOnSubscription<>(s, callable, scheduler);
 		s.onSubscribe(parent);

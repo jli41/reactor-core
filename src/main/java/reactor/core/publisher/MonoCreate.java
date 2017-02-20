@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ *       http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,14 +15,18 @@
  */
 package reactor.core.publisher;
 
-import java.util.concurrent.atomic.*;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
+import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
-import org.reactivestreams.*;
-
+import org.reactivestreams.Subscriber;
 import reactor.core.Cancellation;
 import reactor.core.Disposable;
 import reactor.core.publisher.FluxCreate.SinkDisposable;
+import reactor.util.context.Context;
+import reactor.util.context.ContextRelay;
 
 /**
  * Wraps a the downstream Subscriber into a single emission object
@@ -33,14 +37,14 @@ final class MonoCreate<T> extends Mono<T> {
 
     final Consumer<MonoSink<T>> callback;
 
-    public MonoCreate(Consumer<MonoSink<T>> callback) {
+    MonoCreate(Consumer<MonoSink<T>> callback) {
         this.callback = callback;
     }
 
 
     @Override
-    public void subscribe(Subscriber<? super T> s) {
-        DefaultMonoSink<T> emitter = new DefaultMonoSink<>(s);
+    public void subscribe(Subscriber<? super T> s, Context ctx) {
+	    DefaultMonoSink<T> emitter = new DefaultMonoSink<>(s, ctx);
 
         s.onSubscribe(emitter);
 
@@ -51,8 +55,12 @@ final class MonoCreate<T> extends Mono<T> {
         }
     }
 
-    static final class DefaultMonoSink<T> implements MonoSink<T>, Subscription {
-        final Subscriber<? super T> actual;
+	static final class DefaultMonoSink<T> extends AtomicBoolean
+			implements MonoSink<T>, InnerProducer<T> {
+
+		final Subscriber<? super T> actual;
+
+		final Context context;
 
 		volatile Disposable disposable;
 		@SuppressWarnings("rawtypes")
@@ -71,9 +79,32 @@ final class MonoCreate<T> extends Mono<T> {
         static final int HAS_REQUEST_NO_VALUE = 2;
         static final int HAS_REQUEST_HAS_VALUE = 3;
 
-        DefaultMonoSink(Subscriber<? super T> actual) {
-            this.actual = actual;
-        }
+		DefaultMonoSink(Subscriber<? super T> actual, Context ctx) {
+			this.actual = actual;
+			this.context = ctx;
+		}
+
+		@Override
+		public MonoSink<T> contextualize(Function<Context, Context> doOnContext) {
+			if (compareAndSet(false, true)) {
+				Context c = doOnContext.apply(context);
+				if(c != context) {
+					ContextRelay.set(actual, c);
+				}
+			}
+			return this;
+		}
+
+		@Override
+		public Object scan(Attr key) {
+			switch (key){
+				case TERMINATED:
+					return state == HAS_REQUEST_HAS_VALUE || state == NO_REQUEST_HAS_VALUE;
+				case CANCELLED:
+					return disposable == Flux.CANCELLED;
+			}
+			return InnerProducer.super.scan(key);
+		}
 
         @Override
         public void success() {
@@ -132,6 +163,11 @@ final class MonoCreate<T> extends Mono<T> {
         }
 
 		@Override
+		public Subscriber<? super T> actual() {
+			return actual;
+		}
+
+		@Override
 		public MonoSink<T> onCancel(Disposable d) {
 			if (d != null) {
 				SinkDisposable sd = new SinkDisposable(null, d);
@@ -139,10 +175,8 @@ final class MonoCreate<T> extends Mono<T> {
 					Disposable c = disposable;
 					if (c instanceof SinkDisposable) {
 						SinkDisposable current = (SinkDisposable) c;
-						if (current.onCancel == null)
-							current.onCancel = d;
-						else
-							d.dispose();
+						if (current.onCancel == null) current.onCancel = d;
+						else d.dispose();
 					}
 				}
 			}
@@ -169,8 +203,8 @@ final class MonoCreate<T> extends Mono<T> {
 
 		@Deprecated
 		@Override
-		public void setCancellation(Cancellation c) {
-			onCancel(new Disposable() {
+		public MonoSink<T> setCancellation(Cancellation c) {
+			return onCancel(new Disposable() {
 				@Override
 				public void dispose() {
 					c.dispose();

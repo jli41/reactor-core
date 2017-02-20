@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,8 +15,8 @@
  */
 package reactor.core.publisher;
 
-import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
+import reactor.util.context.Context;
 
 /**
  * Intercepts the onSubscribe call and makes sure calls to Subscription methods
@@ -31,14 +31,14 @@ import org.reactivestreams.Subscriber;
  * @see <a href="https://github.com/reactor/reactive-streams-commons">https://github.com/reactor/reactive-streams-commons</a>
  * @since 3.0
  */
-final class MonoAwaitOnSubscribe<T> extends MonoSource<T, T> {
+final class MonoAwaitOnSubscribe<T> extends MonoOperator<T, T> {
 
-	public MonoAwaitOnSubscribe(Publisher<? extends T> source) {
+	MonoAwaitOnSubscribe(Mono<? extends T> source) {
 		super(source);
 	}
 	
 	@Override
-	public void subscribe(Subscriber<? super T> s) {
-		source.subscribe(new FluxAwaitOnSubscribe.PostOnSubscribeSubscriber<>(s));
+	public void subscribe(Subscriber<? super T> s, Context ctx) {
+		source.subscribe(new FluxAwaitOnSubscribe.PostOnSubscribeSubscriber<>(s), ctx);
 	}
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,13 +18,15 @@ package reactor.core.publisher;
 import java.util.function.*;
 
 import org.reactivestreams.*;
+import reactor.core.Scannable;
+import reactor.util.context.Context;
 
 /**
  * Filters each 'rail' of the source ParallelFlux with a predicate function.
  *
  * @param <T> the input value type
  */
-final class ParallelFilter<T> extends ParallelFlux<T> {
+final class ParallelFilter<T> extends ParallelFlux<T> implements Scannable{
 
 	final ParallelFlux<T> source;
 	
@@ -36,7 +38,18 @@ final class ParallelFilter<T> extends ParallelFlux<T> {
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super T>[] subscribers) {
+	public Object scan(Attr key) {
+		switch (key){
+			case PARENT:
+				return source;
+			case PREFETCH:
+				return getPrefetch();
+		}
+		return null;
+	}
+
+	@Override
+	public void subscribe(Subscriber<? super T>[] subscribers, Context ctx) {
 		if (!validate(subscribers)) {
 			return;
 		}
@@ -49,7 +62,7 @@ final class ParallelFilter<T> extends ParallelFlux<T> {
 			parents[i] = new FluxFilter.FilterSubscriber<>(subscribers[i], predicate);
 		}
 		
-		source.subscribe(parents);
+		source.subscribe(parents, ctx);
 	}
 
 	@Override

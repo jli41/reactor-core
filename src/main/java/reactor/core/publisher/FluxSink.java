@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,9 +16,12 @@
 
 package reactor.core.publisher;
 
+import java.util.function.Function;
+
 import org.reactivestreams.Subscriber;
 import reactor.core.Cancellation;
 import reactor.core.Disposable;
+import reactor.util.context.Context;
 
 /**
  * Wrapper API around a downstream Subscriber for emitting any number of
@@ -28,7 +31,17 @@ import reactor.core.Disposable;
  */
 public interface FluxSink<T> {
 
-    /**
+	/**
+	 * Immediately propagate a {@link Context} to the child {@link Subscriber} given an
+	 * eventually non empty parent {@link Context}.
+	 *
+	 * @param doOnContext a {@link Function} given the parent context and producing a
+	 * new one to be pushed
+	 * @return this sink
+	 */
+	FluxSink<T> contextualize(Function<Context, Context> doOnContext);
+
+	/**
      * @see Subscriber#onComplete()
      */
     void complete();
@@ -43,8 +56,9 @@ public interface FluxSink<T> {
      * Try emitting, might throw an unchecked exception.
      * @see Subscriber#onNext(Object)
      * @param t the value to emit, not null
+     * @return this sink
      */
-    void next(T t);
+    FluxSink<T> next(T t);
 
 	/**
 	 * The current outstanding request amount.
@@ -60,7 +74,7 @@ public interface FluxSink<T> {
 
 	/**
 	 * Ensures that calls to next, error and complete are properly serialized.
-	 * @return the serialized {@link FluxSink}
+	 * @return a new serialized {@link FluxSink}
 	 */
 	FluxSink<T> serialize();
 
@@ -88,9 +102,10 @@ public interface FluxSink<T> {
      * that will be disposed in case the downstream cancels the sequence
      * via {@link org.reactivestreams.Subscription#cancel()}.
      * @param c the cancellation callback to use
+     * @return this sink
      */
 	@Deprecated
-    void setCancellation(Cancellation c);
+    FluxSink<T> setCancellation(Cancellation c);
 
 	/**
 	 * Enumeration for backpressure handling.

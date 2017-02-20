@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Pivotal Software Inc, All Rights Reserved.
+ * Copyright (c) 2011-2017 Pivotal Software Inc, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@ import java.util.function.Function;
 
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
+import reactor.util.context.Context;
 
 /**
  * Resumes the failed main sequence with another sequence returned by
@@ -28,11 +29,11 @@ import org.reactivestreams.Subscriber;
  * @param <T> the value type
  * @see <a href="https://github.com/reactor/reactive-streams-commons">Reactive-Streams-Commons</a>
  */
-final class MonoOtherwise<T> extends MonoSource<T, T> {
+final class MonoOtherwise<T> extends MonoOperator<T, T> {
 
 	final Function<? super Throwable, ? extends Publisher<? extends T>> nextFactory;
 
-	public MonoOtherwise(Publisher<? extends T> source,
+	MonoOtherwise(Mono<? extends T> source,
 						   Function<? super Throwable, ? extends Mono<? extends T>>
 								   nextFactory) {
 		super(source);
@@ -40,7 +41,7 @@ final class MonoOtherwise<T> extends MonoSource<T, T> {
 	}
 
 	@Override
-	public void subscribe(Subscriber<? super T> s) {
-		source.subscribe(new FluxResume.ResumeSubscriber<>(s, nextFactory));
+	public void subscribe(Subscriber<? super T> s, Context ctx) {
+		source.subscribe(new FluxResume.ResumeSubscriber<>(s, nextFactory, ctx), ctx);
 	}
 }
